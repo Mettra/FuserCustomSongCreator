@@ -155,9 +155,15 @@ struct DataBuffer {
 			}
 		}
 		else {
-			u32 size = data.size() + 1;
-			serialize(size);
-			serialize((u8*)data.data(), size);
+			if (data.size() == 0) {
+				u32 null = 0;
+				serialize(null);
+			}
+			else {
+				u32 size = data.size() + 1;
+				serialize(size);
+				serialize((u8*)data.data(), size);
+			}
 		}
 	}
 };

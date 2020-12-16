@@ -126,14 +126,34 @@ struct AssetHeader {
 		return names[ref].name;
 	}
 
+	size_t findOrCreateName(const std::string &str) {
+		for (size_t i = 0; i < names.size(); ++i) {
+			if (names[i].name == str) {
+				return i;
+			}
+		}
+
+		auto idx = names.size();
+		UnrealName name;
+		name.name = str;
+		names.emplace_back(name);
+		stringCount = names.size();
+
+		return idx;
+	}
+
 	void serialize(DataBuffer &buffer) {
+		sectionOneStringCountAgain = stringCount;
+		dataCategoryCountAgain = dataCategoryCount;
+
+
 		buffer.serialize(magic);
 		buffer.serialize(legacyFileVersion);
 		buffer.serialize(legacyUE3Version);
 		buffer.serialize(UE4FileVersion);
 		buffer.serialize(fileVersionLincenceeUE4);
 		buffer.serialize(customVersions);
-		buffer.serialize(totalHeaderSize);
+		buffer.watch([&]() { buffer.serialize(totalHeaderSize); });
 		buffer.serialize(name);
 		buffer.serialize(packageFlags);
 		buffer.serialize(stringCount);
@@ -197,6 +217,8 @@ struct AssetHeader {
 			}
 			buffer.serializeWithSize(uexpData, uexpDataCount);
 		}
+
+		if (!buffer.loading) totalHeaderSize = buffer.pos;
 	}
 };
 
@@ -206,6 +228,7 @@ struct AssetCtx {
 	AssetHeader *header;
 	i64 length;
 	bool parseHeader;
+	u32 headerSize = 0;
 };
 
 template<typename T>
@@ -260,18 +283,17 @@ struct TextProperty {
 };
 
 struct StringProperty {
+	std::string str;
 
 	void serialize(DataBuffer &buffer) {
-
+		buffer.serialize(str);
 	}
 };
 
 struct ObjectProperty {
-	u8 null;
 	i32 linkVal;
 
 	void serialize(DataBuffer &buffer) {
-		buffer.serialize(null);
 		buffer.serialize(linkVal);
 	}
 };
@@ -288,6 +310,8 @@ struct EnumProperty {
 		if (buffer.ctx<AssetCtx>().parseHeader) {
 			buffer.serialize(enumType);
 			buffer.serialize(blank);
+
+			buffer.ctx<AssetCtx>().headerSize += sizeof(enumType) + 1;
 		}
 
 		buffer.serialize(value.ref);
@@ -303,6 +327,8 @@ struct NameProperty {
 		buffer.serialize(v);
 	}
 };
+
+struct IPropertyValue;
 
 struct ArrayProperty {
 	ArrayProperty() {}
@@ -320,7 +346,7 @@ struct ArrayProperty {
 
 	static const bool custom_header = true;
 	StringRef64 arrayType;
-	std::vector<void*> values; //PropertyValue*
+	std::vector<IPropertyValue*> values;
 
 	~ArrayProperty();
 	void serialize(DataBuffer &buffer);
@@ -329,21 +355,24 @@ struct ArrayProperty {
 struct MapProperty {
 
 	void serialize(DataBuffer &buffer) {
-
+		printf("UNIMPLEMENTED! %s\n", __FUNCTION__);
 	}
 };
 
 struct StructProperty {
+	static const bool custom_header = true;
 
-	void serialize(DataBuffer &buffer) {
+	Guid guid;
+	StringRef64 type;
+	std::vector<IPropertyValue*> values;
 
-	}
+	void serialize(DataBuffer &buffer);
 };
 
 struct ByteProperty {
 
 	void serialize(DataBuffer &buffer) {
-
+		printf("UNIMPLEMENTED! %s\n", __FUNCTION__);
 	}
 };
 
@@ -357,6 +386,22 @@ struct SoftObjectProperty {
 	}
 };
 
+struct BoolProperty {
+	static const bool custom_header = true;
+	bool value;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(value);
+
+		if (buffer.ctx<AssetCtx>().parseHeader) {
+			u8 null = 0;
+			buffer.serialize(null);
+		}
+	}
+};
+
+struct IPropertyDataList;
+
 struct UnknownProperty {
 	std::vector<u8> data;
 
@@ -366,74 +411,11 @@ struct UnknownProperty {
 };
 
 namespace asset_helper {
-	using PropertyValue = std::variant<UnknownProperty, PrimitiveProperty<bool>, PrimitiveProperty<i8>, PrimitiveProperty<i16>, PrimitiveProperty<i32>, PrimitiveProperty<i64>, PrimitiveProperty<u16>, PrimitiveProperty<u32>, PrimitiveProperty<u64>, PrimitiveProperty<float>,
-									   TextProperty, StringProperty, ObjectProperty, EnumProperty, ByteProperty, NameProperty, ArrayProperty, MapProperty, StructProperty, PrimitiveProperty<Guid>, SoftObjectProperty>;
+	using PropertyValue = std::variant<UnknownProperty, BoolProperty, PrimitiveProperty<i8>, PrimitiveProperty<i16>, PrimitiveProperty<i32>, PrimitiveProperty<i64>, PrimitiveProperty<u16>, PrimitiveProperty<u32>, PrimitiveProperty<u64>, PrimitiveProperty<float>,
+									   TextProperty, StringProperty, ObjectProperty, EnumProperty, ByteProperty, NameProperty, ArrayProperty, MapProperty, StructProperty, PrimitiveProperty<Guid>, SoftObjectProperty, IPropertyDataList*>;
 
-	PropertyValue createPropertyValue(const std::string &type) {
-		if (type == "BoolProperty") {
-			return PrimitiveProperty<bool>{};
-		}
-		else if (type == "Int8Property") {
-			return PrimitiveProperty<i8>{};
-		}
-		else if (type == "Int16Property") {
-			return PrimitiveProperty<i16>{};
-		}
-		else if (type == "IntProperty") {
-			return PrimitiveProperty<i32>{};
-		}
-		else if (type == "Int64Property") {
-			return PrimitiveProperty<i64>{};
-		}
-		else if (type == "UInt16Property") {
-			return PrimitiveProperty<u16>{};
-		}
-		else if (type == "UIntProperty") {
-			return PrimitiveProperty<u32>{};
-		}
-		else if (type == "UInt64Property") {
-			return PrimitiveProperty<u64>{};
-		}
-		else if (type == "FloatProperty") {
-			return PrimitiveProperty<float>{};
-		}
-		else if (type == "TextProperty") {
-			return TextProperty{};
-		}
-		else if (type == "StrProperty") {
-			return StringProperty{};
-		}
-		else if (type == "ObjectProperty") {
-			return ObjectProperty{};
-		}
-		else if (type == "EnumProperty") {
-			return EnumProperty{};
-		}
-		else if (type == "ByteProperty") {
-			return ByteProperty{};
-		}
-		else if (type == "NameProperty") {
-			return NameProperty{};
-		}
-		else if (type == "ArrayProperty") {
-			return ArrayProperty{};
-		}
-		else if (type == "MapProperty") {
-			return MapProperty{};
-		}
-		else if (type == "StructProperty") {
-			return StructProperty{};
-		}
-		else if (type == "Guid") {
-			return PrimitiveProperty<Guid>{};
-		}
-		else if (type == "SoftObjectProperty") {
-			return SoftObjectProperty{};
-		}
-		else {
-			return UnknownProperty{};
-		}
-	}
+	PropertyValue createPropertyValue(const std::string &type, const bool useUnknown = true);
+	std::string getTypeForValue(const PropertyValue &v);
 
 	template<class T, class = void>
 	struct has_custom_header : std::false_type {};
@@ -441,79 +423,16 @@ namespace asset_helper {
 	template<class T>
 	struct has_custom_header<T, typename voider<decltype(T::custom_header)>::type> : std::true_type {};
 
-	void serialize(DataBuffer &buffer, const AssetHeader &header, i64 length, PropertyValue &value) {
-		buffer.ctx<AssetCtx>().length = length;
-
-		std::visit([&](auto &&v) {
-			using T = std::decay_t<decltype(v)>;
-
-			if constexpr (!has_custom_header<T>::value) {
-				if (buffer.ctx<AssetCtx>().parseHeader) {
-					u8 dumbheader = 0;
-					buffer.serialize(dumbheader);
-				}
-			}
-
-			if constexpr (DataBuffer::has_serialize<T>::value) {
-				buffer.serialize(v);
-			}
-			else {
-				static_asset(false, "Unable to serialize!");
-			}
-		}, value);
-	}
+	void serialize(DataBuffer &buffer, const AssetHeader &header, i64 length, PropertyValue &value);
 }
 
-ArrayProperty::~ArrayProperty() {
-	for (auto &&ptr : values) {
-		asset_helper::PropertyValue *value = (asset_helper::PropertyValue *)ptr;
-		delete value;
-	}
-}
-
-void ArrayProperty::serialize(DataBuffer &buffer) {
-	bool parseHeader = buffer.ctx<AssetCtx>().parseHeader;
-	if(parseHeader) {
-		buffer.serialize(arrayType.ref);
-
-		u8 null = 0;
-		buffer.serialize(null);
-	}
-
-	if (buffer.loading) {
-		i32 size;
-		buffer.serialize(size);
-
-		values.resize(size);
-		for (i32 i = 0; i < size; ++i) {
-			asset_helper::PropertyValue *value = new asset_helper::PropertyValue();
-			*value = asset_helper::createPropertyValue(arrayType.getString(*buffer.ctx<AssetCtx>().header));
-
-			buffer.ctx<AssetCtx>().parseHeader = false;
-			asset_helper::serialize(buffer, *buffer.ctx<AssetCtx>().header, 0, *value);
-			buffer.ctx<AssetCtx>().parseHeader = parseHeader;
-
-			values[i] = value;
-		}
-	}
-	else {
-		i32 size = values.size();
-		buffer.serialize(size);
-
-		for (auto &&ptr : values) {
-			asset_helper::PropertyValue *value = (asset_helper::PropertyValue *)ptr;
-
-			buffer.ctx<AssetCtx>().parseHeader = false;
-			asset_helper::serialize(buffer, *buffer.ctx<AssetCtx>().header, 0, *value);
-			buffer.ctx<AssetCtx>().parseHeader = parseHeader;
-		}
-	}
-}
-
+struct IPropertyValue {
+	asset_helper::PropertyValue v;
+};
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct PropertyData {
-	i32 nameRef;
+	StringRef nameRef;
 	i32 widgetData;
 	i64 typeNum;
 	i64 length;
@@ -523,20 +442,21 @@ struct PropertyData {
 	void serialize(DataBuffer &buffer) {
 		auto &&header = *buffer.ctx<AssetCtx>().header;
 
-		buffer.serialize(nameRef);
+		buffer.serialize(nameRef.ref);
 		buffer.serialize(widgetData);
 
-		if (header.getHeaderRef(nameRef) == "None" || nameRef == 0) {
+		if (nameRef.getString(header) == "None" || nameRef.ref == 0) {
 			isNone = true;
 			return;
 		}
 
 		buffer.serialize(typeNum);
+
 		buffer.serialize(length);
 
 
 		if (buffer.loading) {
-			std::string type = header.getHeaderRef(nameRef);
+			std::string type = nameRef.getString(header);
 			if (typeNum > 0) {
 				type = header.getHeaderRef((i32)typeNum);
 			}
@@ -544,21 +464,38 @@ struct PropertyData {
 			value = asset_helper::createPropertyValue(type);
 		}
 
+		size_t beforeProp = buffer.pos;
+		auto prevSize = buffer.ctx<AssetCtx>().headerSize;
+
+		buffer.ctx<AssetCtx>().headerSize = 0;
 		asset_helper::serialize(buffer, header, length, value);
+
+		if (!buffer.loading) {
+			size_t finalPos = buffer.pos;
+			length = (finalPos - beforeProp) - buffer.ctx<AssetCtx>().headerSize;
+			buffer.pos = beforeProp - sizeof(length);
+			buffer.serialize(length);
+			buffer.pos = finalPos;
+
+		}
+
+		buffer.ctx<AssetCtx>().headerSize = prevSize;
 	}
 };
 
-
-struct NormalCategory {
+struct IPropertyDataList {
 	std::vector<PropertyData> properties;
 
 	void serialize(DataBuffer &buffer) {
+		bool parseHeader = buffer.ctx<AssetCtx>().parseHeader;
+		buffer.ctx<AssetCtx>().parseHeader = true;
+
 		if (buffer.loading) {
 			bool keepParsing = true;
 			do {
 				PropertyData data;
 				buffer.serialize(data);
-				
+
 				keepParsing = !data.isNone && (buffer.pos != buffer.size);
 				if (keepParsing) {
 					properties.emplace_back(std::move(data));
@@ -571,14 +508,86 @@ struct NormalCategory {
 				buffer.serialize(p);
 			}
 
-			i64 end = 0;
-			buffer.serialize(end);
+			i32 NoneRef = buffer.ctx<AssetCtx>().header->findOrCreateName("None");
+			buffer.serialize(NoneRef);
+
+			i32 null = 0;
+			buffer.serialize(null);
 		}
+
+		buffer.ctx<AssetCtx>().parseHeader = parseHeader;
+	}
+};
+
+struct NormalCategory {
+	IPropertyDataList data;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(data);
+	}
+};
+
+struct DataTableCategory {
+	NormalCategory base;
+	StringRef dataType;
+
+	struct Entry {
+		StringRef rowName;
+		i32 duplicateId;
+		StructProperty value;
+
+		void serialize(DataBuffer &buffer) {
+			buffer.serialize(rowName.ref);
+			buffer.serialize(duplicateId);
+			buffer.serialize(value);
+		}
+	};
+
+	std::vector<Entry> entries;
+
+	void serialize(DataBuffer &buffer) {
+		auto &&header = *buffer.ctx<AssetCtx>().header;
+		buffer.serialize(base);
+
+		
+		if(buffer.loading) {
+			for (auto &&p : base.data.properties) {
+				if (p.nameRef.getString(header) == "RowStruct") {
+					if (auto objPtr = std::get_if<ObjectProperty>(&p.value)) {
+						dataType.ref = header.getLinkRef(objPtr->linkVal);
+						break;
+					}
+				}
+			}
+		}
+
+		i32 null = 0;
+		buffer.serialize(null);
+
+		i32 size = entries.size();
+		buffer.serialize(size);
+
+		bool parseHeader = buffer.ctx<AssetCtx>().parseHeader;
+		buffer.ctx<AssetCtx>().parseHeader = false;
+		buffer.ctx<AssetCtx>().length = 0;
+		if (buffer.loading) {
+			for (i32 i = 0; i < size; ++i) {
+				Entry e;
+				e.value.type.ref = dataType.ref;
+
+				e.serialize(buffer);
+				entries.emplace_back(std::move(e));
+			}
+		}
+		else {
+			buffer.serializeWithSize(entries, size);
+		}
+		buffer.ctx<AssetCtx>().parseHeader = parseHeader;
 	}
 };
 
 struct AssetData {
-	using CatagoryValue = std::variant<NormalCategory>;
+	using CatagoryValue = std::variant<NormalCategory, DataTableCategory>;
 	std::vector<CatagoryValue> catagoryValues;
 
 	void serialize(DataBuffer &buffer) {
@@ -593,8 +602,10 @@ struct AssetData {
 				b.ctx_ = buffer.ctx_;
 
 				std::string name = header.getHeaderRef(header.getLinkRef(c.connection));
-				if (name == "") {
-
+				if (name == "DataTable") {
+					DataTableCategory dataCat;
+					b.serialize(dataCat);
+					catagoryValues.emplace_back(std::move(dataCat));
 				}
 				else {
 					NormalCategory normalCat;
@@ -606,20 +617,25 @@ struct AssetData {
 		else {
 			size_t idx = 0;
 			for (auto &&c : catagoryValues) {
-				size_t start = buffer.pos;
+				
+				DataBuffer b = buffer;
+				std::vector<u8> data;
+				b.setupVector(data);
+				b.pos = 0;
 				std::visit([&](auto &&v) {
-					buffer.serialize(v);
+					b.serialize(v);
 				}, c);
-				size_t end = buffer.pos;
 
+				size_t start = buffer.pos;
+				buffer.serialize(b.buffer, b.size);
 				header.catagories[idx].startV = start;
-				header.catagories[idx].lengthV = (end - start);
-
-				i32 null = 0;
-				buffer.serialize(null);
+				header.catagories[idx].lengthV = b.size;
 
 				++idx;
 			}
+
+			i32 footer = 0x9E2A83C1;
+			buffer.serialize(footer);
 		}
 	}
 };
@@ -636,5 +652,7 @@ struct Asset {
 
 		buffer.serialize(header);
 		buffer.serialize(data);
+
+		header.fileSize_minusFour = buffer.size - 4;
 	}
 };
