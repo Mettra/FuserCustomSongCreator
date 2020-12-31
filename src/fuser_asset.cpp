@@ -1,6 +1,7 @@
 #include "uasset.h"
 #include "imgui.h"
 #include "imgui_stdlib.h"
+#include "crc.h"
 #include <optional>
 
 struct ImSubregion {
@@ -330,7 +331,7 @@ void window_loop() {
 #ifdef DO_PAK_FILE
 
 		{
-			std::ifstream infile("dllstar_P.pak", std::ios_base::binary);
+			std::ifstream infile("unlock_songs_P.pak", std::ios_base::binary);
 			std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
 			DataBuffer dataBuf;
 			dataBuf.setupVector(fileData);
@@ -347,6 +348,40 @@ void window_loop() {
 			outPak.write((char*)outBuf.buffer, outBuf.size);
 
 			test_buffer(dataBuf, outBuf);
+
+
+			{
+				PakSigFile sigFile;
+				sigFile.encrypted_total_hash.resize(512);
+
+				const u32 chunkSize = 64 * 1024;
+				for (size_t start = 0; start < outBuf.size; start += chunkSize) {
+					size_t end = start + chunkSize;
+					if (end > outBuf.size) {
+						end = outBuf.size;
+					}
+
+					sigFile.chunks.emplace_back(CRC::MemCrc32(outBuf.buffer + start, end - start));
+				}
+
+				std::vector<u8> sigOutData;
+				DataBuffer sigOutBuf;
+				sigOutBuf.setupVector(sigOutData);
+				sigOutBuf.loading = false;
+				sigFile.serialize(sigOutBuf);
+				sigOutBuf.finalize();
+
+				std::ofstream outPak("out_test.sig", std::ios_base::binary);
+				outPak.write((char*)sigOutBuf.buffer, sigOutBuf.size);
+
+				std::ifstream infile("unlock_songs_P.sig", std::ios_base::binary);
+				std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+				DataBuffer sigDataBuf;
+				sigDataBuf.setupVector(fileData);
+
+				test_buffer(sigDataBuf, sigOutBuf);
+			}
+
 		}
 #endif
 

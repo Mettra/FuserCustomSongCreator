@@ -123,12 +123,12 @@ struct DataBuffer {
 			return;
 		}
 
-		constexpr u32 dbgpos = 4405;
-		if (!loading) {
-			if (pos <= dbgpos && pos + data_size > dbgpos) {
-				__debugbreak();
-			}
-		}
+		//constexpr u32 dbgpos = 4405;
+		//if (!loading) {
+		//	if (pos <= dbgpos && pos + data_size > dbgpos) {
+		//		__debugbreak();
+		//	}
+		//}
 
 		if (loading) {
 			memcpy(data, buffer + pos, data_size);
