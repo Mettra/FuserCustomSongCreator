@@ -2,6 +2,7 @@
 
 #include <type_traits>
 #include <functional>
+#include <optional>
 
 template<class ...Ts>
 struct voider {
@@ -24,6 +25,13 @@ struct DataBuffer {
 	};
 	std::vector<WatchedValue> watchedValues;
 
+	struct DerivedBuffer {
+		DataBuffer *base = nullptr;
+		size_t offset = 0;
+	};
+	std::optional<DerivedBuffer> derivedBuffer;
+	
+
 	DataBuffer() {
 		resize = [](size_t) {
 			throw std::out_of_range("Cannot resize the buffer!");
@@ -31,9 +39,22 @@ struct DataBuffer {
 	}
 
 	void watch(std::function<void()> fn) {
-		watch_ = true;
+		if (derivedBuffer.has_value()) {
+			derivedBuffer->base->watch_ = true;
+		}
+		else {
+			watch_ = true;
+
+		}
+
 		fn();
-		watch_ = false;
+
+		if (derivedBuffer.has_value()) {
+			derivedBuffer->base->watch_ = false;
+		}
+		else {
+			watch_ = false;
+		}
 	}
 
 	void finalize() {
@@ -41,6 +62,24 @@ struct DataBuffer {
 			memcpy(buffer + w.buffer_pos, w.data, w.size);
 		}
 		watchedValues.clear();
+	}
+
+	DataBuffer setupFromHere() {
+		DerivedBuffer dB;
+		dB.base = this;
+		dB.offset = pos;
+
+		DataBuffer newBuffer = *this;
+		newBuffer.pos = 0;
+		if (loading) {
+			newBuffer.size = size - pos;
+		}
+		else {
+			newBuffer.size = 0;
+		}
+		newBuffer.derivedBuffer = dB;
+
+		return newBuffer;
 	}
 
 	void setupVector(std::vector<u8> &v) {
@@ -60,6 +99,37 @@ struct DataBuffer {
 
 
 	void serialize(u8 *data, size_t data_size) {
+		if (derivedBuffer.has_value()) {
+			size_t prevPos = derivedBuffer->base->pos;
+			
+			derivedBuffer->base->pos = pos + derivedBuffer->offset;
+			derivedBuffer->base->serialize(data, data_size);
+			derivedBuffer->base->pos = prevPos;
+
+			pos += data_size;
+			if (!loading && pos > size) {
+				size = pos;
+			}
+
+			return;
+		}
+
+		if (data_size > 1024) {
+			__debugbreak();
+		}
+
+		if (loading && pos + data_size > size) {
+			__debugbreak();
+			return;
+		}
+
+		constexpr u32 dbgpos = 4405;
+		if (!loading) {
+			if (pos <= dbgpos && pos + data_size > dbgpos) {
+				__debugbreak();
+			}
+		}
+
 		if (loading) {
 			memcpy(data, buffer + pos, data_size);
 		}
@@ -103,6 +173,9 @@ struct DataBuffer {
 		}
 		else if constexpr (std::is_fundamental_v<T>) {
 			serialize((u8*)&data, sizeof(T));
+		}
+		else if constexpr (std::is_enum_v<T>) {
+			serialize((u8*)&data, sizeof(std::underlying_type_t<T>));
 		}
 		else {
 			static_assert(false, "Unsupported type to serialize!");

@@ -1,6 +1,12 @@
 #include "core_types.h"
 #include "serialize.h"
 
+struct AssetHeader;
+
+struct BaseCtx {
+	bool useStringRef = true;
+};
+
 struct UnrealName {
 	std::string name;
 	i16 nonCasePreservingHash;
@@ -34,6 +40,68 @@ struct Link {
 		buffer.serialize(property);
 	}
 };
+
+
+struct StringRef32 {
+	i32 ref;
+	std::string str;
+
+	bool operator==(const StringRef32& rhs) {
+		if (str.empty()) {
+			return ref == rhs.ref;
+		}
+		else {
+			return str == rhs.str;
+		}
+	}
+
+	const std::string& getString(const AssetHeader &header);
+	const std::string& getString(const AssetHeader *header) {
+		if (header) {
+			return getString(*header);
+		}
+		else {
+			return str;
+		}
+	}
+
+	void serialize(DataBuffer &buffer) {
+		if (buffer.ctx<BaseCtx>().useStringRef) {
+			buffer.serialize(ref);
+		}
+		else {
+			buffer.serialize(str);
+		}
+	}
+};
+
+struct StringRef64 {
+	i64 ref;
+	std::string str;
+
+	StringRef64() {}
+	StringRef64(StringRef32 r) : ref(r.ref), str(r.str) {}
+
+	const std::string& getString(const AssetHeader &header);
+	const std::string& getString(const AssetHeader *header) {
+		if (header) {
+			return getString(*header);
+		}
+		else {
+			return str;
+		}
+	}
+
+	void serialize(DataBuffer &buffer) {
+		if (buffer.ctx<BaseCtx>().useStringRef) {
+			buffer.serialize(ref);
+		}
+		else {
+			buffer.serialize(str);
+		}
+	}
+};
+
 
 struct Catagory {
 	i32 connection;
@@ -69,6 +137,22 @@ struct CatagoryRef {
 	}
 };
 
+struct Version {
+	u16 major;
+	u16 minor;
+	u16 patch;
+	i32 changelist;
+	std::string branch;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(major);
+		buffer.serialize(minor);
+		buffer.serialize(patch);
+		buffer.serialize(changelist);
+		buffer.serialize(branch);
+	}
+};
+
 struct AssetHeader {
 	u32 magic;
 	i32 legacyFileVersion;
@@ -80,6 +164,7 @@ struct AssetHeader {
 	std::string name;
 	u32 packageFlags;
 	i32 stringCount;
+	char unk_buffer[20];
 	i32 headerSize;
 	i64 unk;
 	i32 dataCategoryCount;
@@ -93,10 +178,22 @@ struct AssetHeader {
 	i64 another_unk;
 	Guid assetGUID;
 
-	i32 unk_one;
-	i32 dataCategoryCountAgain;
+	struct Generation {
+		i32 exportCount;
+		i32 nameCount;
 
-	i32 sectionOneStringCountAgain;
+		void serialize(DataBuffer &buffer) {
+			buffer.serialize(exportCount);
+			buffer.serialize(nameCount);
+		}
+	};
+	std::vector<Generation> generations;
+
+	Version savedByVersion;
+	Version compatibleWithVersion;
+	u32 compressionFlags;
+	u32 packageSource;
+
 	i32 hash;
 	i32 unk_zero;
 	i32 uexpDataOffset;
@@ -105,6 +202,7 @@ struct AssetHeader {
 	std::vector<UnrealName> names;
 	std::vector<Link> links;
 	std::vector<Catagory> catagories;
+	char unk_buffer_2[64];
 	std::vector<CatagoryRef> catagoryGroups;
 	std::vector<std::string> section5Strings;
 
@@ -120,16 +218,19 @@ struct AssetHeader {
 		}
 	}
 
-	std::string getHeaderRef(i32 ref) const {
-		if (ref < 0) return std::to_string(-ref);
-		if (ref > names.size()) return std::to_string(ref);
+	const std::string& getHeaderRef(i32 ref) const {
+		static std::string BAD_STRING = "BAD";
+		if (ref < 0) return BAD_STRING;
+		if (ref > names.size()) BAD_STRING;
 		return names[ref].name;
 	}
 
-	size_t findOrCreateName(const std::string &str) {
+	StringRef32 findOrCreateName(const std::string &str) {
 		for (size_t i = 0; i < names.size(); ++i) {
 			if (names[i].name == str) {
-				return i;
+				StringRef32 r;
+				r.ref = i;
+				return r;
 			}
 		}
 
@@ -139,15 +240,39 @@ struct AssetHeader {
 		names.emplace_back(name);
 		stringCount = names.size();
 
-		return idx;
+		StringRef32 r;
+		r.ref = idx;
+		return r;
+	}
+
+	StringRef32 findName(const std::string &str) {
+		for (size_t i = 0; i < names.size(); ++i) {
+			if (names[i].name == str) {
+				StringRef32 r;
+				r.ref = i;
+				return r;
+			}
+		}
+
+		StringRef32 r;
+		r.ref = std::numeric_limits<i32>::max();
+		return r;
 	}
 
 	void serialize(DataBuffer &buffer) {
-		sectionOneStringCountAgain = stringCount;
-		dataCategoryCountAgain = dataCategoryCount;
+		if (generations.size() > 0) {
+			generations[0].exportCount = dataCategoryCount;
+			generations[0].nameCount = stringCount;
+		}
 
+		size_t start = 0;
 
 		buffer.serialize(magic);
+		if (magic != 0x9E2A83C1) {
+			__debugbreak();
+			return;
+		}
+
 		buffer.serialize(legacyFileVersion);
 		buffer.serialize(legacyUE3Version);
 		buffer.serialize(UE4FileVersion);
@@ -168,17 +293,20 @@ struct AssetHeader {
 		buffer.watch([&]() { buffer.serialize(sectionFiveOffset); });
 		buffer.serialize(another_unk);
 		buffer.serialize(assetGUID);
-		buffer.serialize(unk_one);
-		buffer.serialize(dataCategoryCountAgain);
-		buffer.serialize(sectionOneStringCountAgain);
-		char null_0[36] = { 0 };
-		buffer.serialize(null_0);
+		buffer.serialize(generations);
+
+		buffer.serialize(savedByVersion);
+		buffer.serialize(compatibleWithVersion);
+		buffer.serialize(compressionFlags);
+		buffer.serialize(packageSource);
+
 		buffer.serialize(hash);
 		buffer.serialize(unk_zero);
+
 		buffer.watch([&]() { buffer.serialize(uexpDataOffset); });
 		buffer.watch([&]() { buffer.serialize(fileSize_minusFour); });
-		char null_1[20] = { 0 };
-		buffer.serialize(null_1);
+
+		buffer.serialize(unk_buffer);
 
 		auto jumpOrSetOffset = [&buffer](auto &pos) {
 			if (buffer.loading) {
@@ -198,8 +326,7 @@ struct AssetHeader {
 		jumpOrSetOffset(section3Offset);
 		buffer.serializeWithSize(catagories, dataCategoryCount);
 
-		char null_2[64] = { 0 };
-		buffer.serialize(null_2);
+		buffer.serialize(unk_buffer_2);
 
 		jumpOrSetOffset(sectionFourOffset);
 		buffer.serializeWithSize(catagoryGroups, dataCategoryCount);
@@ -225,10 +352,12 @@ struct AssetHeader {
 ///////////////////////////////////////////////////////////////
 
 struct AssetCtx {
-	AssetHeader *header;
-	i64 length;
-	bool parseHeader;
+	BaseCtx baseCtx;
+	AssetHeader *header = nullptr;
+	i64 length = 0;
+	bool parseHeader = true;
 	u32 headerSize = 0;
+	bool parsingSaveFormat = false;
 };
 
 template<typename T>
@@ -237,22 +366,6 @@ struct PrimitiveProperty {
 
 	void serialize(DataBuffer &buffer) {
 		buffer.serialize(data);
-	}
-};
-
-struct StringRef {
-	i32 ref;
-
-	std::string getString(const AssetHeader &header) {
-		return header.getHeaderRef(ref);
-	}
-};
-
-struct StringRef64 {
-	i64 ref;
-
-	std::string getString(const AssetHeader &header) {
-		return header.getHeaderRef(ref);
 	}
 };
 
@@ -293,38 +406,52 @@ struct StringProperty {
 struct ObjectProperty {
 	i32 linkVal;
 
+	StringRef32 type;
+	StringRef32 value;
 	void serialize(DataBuffer &buffer) {
 		buffer.serialize(linkVal);
+
+		if (buffer.ctx<AssetCtx>().parsingSaveFormat) {
+			buffer.serialize(type);
+			buffer.serialize(value);
+		}
 	}
 };
 
 struct EnumProperty {
 	static const bool custom_header = true;
 
-	i64 enumType;
+	StringRef64 enumType;
 	u8 blank;
 	StringRef64 value;
 
 
 	void serialize(DataBuffer &buffer) {
 		if (buffer.ctx<AssetCtx>().parseHeader) {
+			size_t headerStart = buffer.pos;
+
 			buffer.serialize(enumType);
 			buffer.serialize(blank);
 
-			buffer.ctx<AssetCtx>().headerSize += sizeof(enumType) + 1;
+			buffer.ctx<AssetCtx>().headerSize += (buffer.pos - headerStart);
 		}
 
-		buffer.serialize(value.ref);
+		buffer.serialize(value);
 	}
 };
 
 struct NameProperty {
-	StringRef name;
-	i32 v;
+	StringRef32 name;
+	u32 v;
 
 	void serialize(DataBuffer &buffer) {
-		buffer.serialize(name.ref);
-		buffer.serialize(v);
+		if (!buffer.ctx<AssetCtx>().parsingSaveFormat) {
+			buffer.serialize(name);
+			buffer.serialize(v);
+		}
+		else {
+			buffer.serialize(name);
+		}
 	}
 };
 
@@ -353,36 +480,77 @@ struct ArrayProperty {
 };
 
 struct MapProperty {
+	static const bool custom_header = true;
+	StringRef64 keyType;
+	StringRef64 valueType;
 
-	void serialize(DataBuffer &buffer) {
-		printf("UNIMPLEMENTED! %s\n", __FUNCTION__);
-	}
+	struct MapPair {
+		IPropertyValue* key;
+		IPropertyValue* value;
+	};
+	std::vector<MapPair> map;
+
+	void serialize(DataBuffer &buffer);
 };
 
 struct StructProperty {
 	static const bool custom_header = true;
+	static const bool needs_length = true;
 
 	Guid guid;
 	StringRef64 type;
 	std::vector<IPropertyValue*> values;
 
 	void serialize(DataBuffer &buffer);
+	IPropertyValue *get(const std::string &name);
 };
 
 struct ByteProperty {
+	static const bool custom_header = true;
+
+	StringRef64 enumType;
+	i32 byteType;
+	i32 value;
 
 	void serialize(DataBuffer &buffer) {
-		printf("UNIMPLEMENTED! %s\n", __FUNCTION__);
+		if (buffer.ctx<AssetCtx>().parseHeader) {
+			size_t headerStart = buffer.pos;
+
+			buffer.serialize(enumType);
+			u8 null;
+			buffer.serialize(null);
+
+			buffer.ctx<AssetCtx>().headerSize += (headerStart - buffer.pos);
+		}
+
+		if (buffer.ctx<AssetCtx>().length == 1) {
+			u8 v = value;
+			buffer.serialize(v);
+			value = v;
+		}
+		else if (buffer.ctx<AssetCtx>().length == 8 || buffer.ctx<AssetCtx>().length == 0) {
+			u64 v = value;
+			buffer.serialize(v);
+			value = v;
+		}
 	}
 };
 
 struct SoftObjectProperty {
-	StringRef name;
+	StringRef32 name;
 	u64 value;
 
 	void serialize(DataBuffer &buffer) {
-		buffer.serialize(name.ref);
-		buffer.serialize(value);
+		buffer.serialize(name);
+
+		if (buffer.ctx<AssetCtx>().parsingSaveFormat) {
+			u32 smolValue = value;
+			buffer.serialize(smolValue);
+			value = smolValue;
+		}
+		else {
+			buffer.serialize(value);
+		}
 	}
 };
 
@@ -400,9 +568,19 @@ struct BoolProperty {
 	}
 };
 
+struct DateTime {
+	u64 time;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(time);
+	}
+};
+
 struct IPropertyDataList;
 
 struct UnknownProperty {
+	static const bool needs_length = true;
+
 	std::vector<u8> data;
 
 	void serialize(DataBuffer &buffer) {
@@ -412,18 +590,16 @@ struct UnknownProperty {
 
 namespace asset_helper {
 	using PropertyValue = std::variant<UnknownProperty, BoolProperty, PrimitiveProperty<i8>, PrimitiveProperty<i16>, PrimitiveProperty<i32>, PrimitiveProperty<i64>, PrimitiveProperty<u16>, PrimitiveProperty<u32>, PrimitiveProperty<u64>, PrimitiveProperty<float>,
-									   TextProperty, StringProperty, ObjectProperty, EnumProperty, ByteProperty, NameProperty, ArrayProperty, MapProperty, StructProperty, PrimitiveProperty<Guid>, SoftObjectProperty, IPropertyDataList*>;
+									   TextProperty, StringProperty, ObjectProperty, EnumProperty, ByteProperty, NameProperty, ArrayProperty, MapProperty, StructProperty, PrimitiveProperty<Guid>, SoftObjectProperty, IPropertyDataList*, DateTime>;
 
 	PropertyValue createPropertyValue(const std::string &type, const bool useUnknown = true);
 	std::string getTypeForValue(const PropertyValue &v);
 
-	template<class T, class = void>
-	struct has_custom_header : std::false_type {};
+	void serialize(DataBuffer &buffer, i64 length, PropertyValue &value);
 
-	template<class T>
-	struct has_custom_header<T, typename voider<decltype(T::custom_header)>::type> : std::true_type {};
+	bool needsLength(const PropertyValue &value);
 
-	void serialize(DataBuffer &buffer, const AssetHeader &header, i64 length, PropertyValue &value);
+	StringRef32 createNoneRef(DataBuffer &buffer);
 }
 
 struct IPropertyValue {
@@ -432,33 +608,48 @@ struct IPropertyValue {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct PropertyData {
-	StringRef nameRef;
-	i32 widgetData;
-	i64 typeNum;
-	i64 length;
+	StringRef32 nameRef;
+	i32 widgetData = 0;
+	StringRef64 typeRef;
+	i64 length = 0;
 	asset_helper::PropertyValue value;
 	bool isNone = false;
 
 	void serialize(DataBuffer &buffer) {
-		auto &&header = *buffer.ctx<AssetCtx>().header;
+		auto headerPtr = buffer.ctx<AssetCtx>().header;
 
-		buffer.serialize(nameRef.ref);
-		buffer.serialize(widgetData);
+		buffer.serialize(nameRef);
 
-		if (nameRef.getString(header) == "None" || nameRef.ref == 0) {
-			isNone = true;
-			return;
+		if (!buffer.ctx<AssetCtx>().parsingSaveFormat) {
+			buffer.serialize(widgetData);
+
+			if (nameRef.getString(*headerPtr) == "None" || nameRef.ref == 0) {
+				isNone = true;
+				return;
+			}
+		}
+		else {
+			if (nameRef.str == "None") {
+				isNone = true;
+				return;
+			}
 		}
 
-		buffer.serialize(typeNum);
-
+		buffer.serialize(typeRef);
 		buffer.serialize(length);
 
 
 		if (buffer.loading) {
-			std::string type = nameRef.getString(header);
-			if (typeNum > 0) {
-				type = header.getHeaderRef((i32)typeNum);
+			std::string type;
+
+			if (!buffer.ctx<AssetCtx>().parsingSaveFormat) {
+				type = nameRef.getString(*headerPtr);
+				if (typeRef.ref > 0) {
+					type = typeRef.getString(*headerPtr);
+				}
+			}
+			else {
+				type = typeRef.str;
 			}
 
 			value = asset_helper::createPropertyValue(type);
@@ -468,9 +659,9 @@ struct PropertyData {
 		auto prevSize = buffer.ctx<AssetCtx>().headerSize;
 
 		buffer.ctx<AssetCtx>().headerSize = 0;
-		asset_helper::serialize(buffer, header, length, value);
+		asset_helper::serialize(buffer, length, value);
 
-		if (!buffer.loading) {
+		if (!buffer.loading && asset_helper::needsLength(value)) {
 			size_t finalPos = buffer.pos;
 			length = (finalPos - beforeProp) - buffer.ctx<AssetCtx>().headerSize;
 			buffer.pos = beforeProp - sizeof(length);
@@ -486,29 +677,40 @@ struct PropertyData {
 struct IPropertyDataList {
 	std::vector<PropertyData> properties;
 
+	PropertyData* get(StringRef32 name) {
+		for (auto &&p : properties) {
+			if (p.nameRef == name) {
+				return &p;
+			}
+		}
+
+		return nullptr;
+	}
+
 	void serialize(DataBuffer &buffer) {
 		bool parseHeader = buffer.ctx<AssetCtx>().parseHeader;
 		buffer.ctx<AssetCtx>().parseHeader = true;
 
 		if (buffer.loading) {
 			bool keepParsing = true;
-			do {
+			while(buffer.pos < buffer.size - 4) {
 				PropertyData data;
 				buffer.serialize(data);
 
-				keepParsing = !data.isNone && (buffer.pos != buffer.size);
-				if (keepParsing) {
+				if (!data.isNone) {
 					properties.emplace_back(std::move(data));
 				}
-
-			} while (keepParsing);
+				else {
+					break;
+				}
+			}
 		}
 		else {
 			for (auto &&p : properties) {
 				buffer.serialize(p);
 			}
 
-			i32 NoneRef = buffer.ctx<AssetCtx>().header->findOrCreateName("None");
+			StringRef32 NoneRef = asset_helper::createNoneRef(buffer);
 			buffer.serialize(NoneRef);
 
 			i32 null = 0;
@@ -529,15 +731,15 @@ struct NormalCategory {
 
 struct DataTableCategory {
 	NormalCategory base;
-	StringRef dataType;
+	StringRef32 dataType;
 
 	struct Entry {
-		StringRef rowName;
+		StringRef32 rowName;
 		i32 duplicateId;
 		StructProperty value;
 
 		void serialize(DataBuffer &buffer) {
-			buffer.serialize(rowName.ref);
+			buffer.serialize(rowName);
 			buffer.serialize(duplicateId);
 			buffer.serialize(value);
 		}
@@ -587,50 +789,67 @@ struct DataTableCategory {
 };
 
 struct AssetData {
-	using CatagoryValue = std::variant<NormalCategory, DataTableCategory>;
+	struct CatagoryValue {
+		using CatagoryVariant = std::variant<NormalCategory, DataTableCategory>;
+
+		CatagoryVariant value;
+		std::vector<u8> extraData;
+	};
 	std::vector<CatagoryValue> catagoryValues;
 
 	void serialize(DataBuffer &buffer) {
 		auto &&header = *buffer.ctx<AssetCtx>().header;
 
 		if (buffer.loading) {
+			size_t catIdx = 0;
 			for(auto &&c : header.catagories) {
-				DataBuffer b;
-				b.pos = 0;
-				b.buffer = buffer.buffer + buffer.pos;
+				DataBuffer b = buffer.setupFromHere();
 				b.size = c.lengthV;
-				b.ctx_ = buffer.ctx_;
+
+				CatagoryValue v;
 
 				std::string name = header.getHeaderRef(header.getLinkRef(c.connection));
 				if (name == "DataTable") {
 					DataTableCategory dataCat;
 					b.serialize(dataCat);
-					catagoryValues.emplace_back(std::move(dataCat));
+					v.value = std::move(dataCat);
 				}
 				else {
 					NormalCategory normalCat;
 					b.serialize(normalCat);
-					catagoryValues.emplace_back(std::move(normalCat));
+					v.value = std::move(normalCat);
 				}
+
+				i32 nextStart = buffer.size - buffer.pos - 4;
+				if (catIdx + 1 < header.catagories.size()) {
+					nextStart = header.catagories[catIdx + 1].startV;
+				}
+
+				i32 extraLen = nextStart - b.pos;
+				b.serializeWithSize(v.extraData, extraLen);
+
+				catagoryValues.emplace_back(std::move(v));
+				++catIdx;
+
+				buffer.pos = b.pos + b.derivedBuffer->offset;
 			}
 		}
 		else {
 			size_t idx = 0;
 			for (auto &&c : catagoryValues) {
 				
-				DataBuffer b = buffer;
-				std::vector<u8> data;
-				b.setupVector(data);
-				b.pos = 0;
+				size_t start = buffer.pos;
+
+				DataBuffer b = buffer.setupFromHere();
 				std::visit([&](auto &&v) {
 					b.serialize(v);
-				}, c);
+				}, c.value);
 
-				size_t start = buffer.pos;
-				buffer.serialize(b.buffer, b.size);
 				header.catagories[idx].startV = start;
 				header.catagories[idx].lengthV = b.size;
 
+				buffer.pos = b.pos + b.derivedBuffer->offset;
+				buffer.serializeWithSize(c.extraData, c.extraData.size());
 				++idx;
 			}
 
@@ -654,5 +873,251 @@ struct Asset {
 		buffer.serialize(data);
 
 		header.fileSize_minusFour = buffer.size - 4;
+	}
+};
+
+
+
+
+struct SaveFile {
+	char start[48];
+	std::string structName;
+	IPropertyDataList properties;
+
+	void serialize(DataBuffer &buffer) {
+		AssetCtx ctx;
+		ctx.baseCtx.useStringRef = false;
+		ctx.parsingSaveFormat = true;
+
+		buffer.ctx_ = &ctx;
+		buffer.serialize(start);
+		buffer.serialize(structName);
+		buffer.serialize(properties);
+	}
+};
+
+
+struct FSHAHash {
+	char data[20];
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(data);
+	}
+};
+
+enum class EPakVersion : u32
+{
+	INITIAL = 1,
+	NO_TIMESTAMPS = 2,
+	COMPRESSION_ENCRYPTION = 3,         // UE4.13+
+	INDEX_ENCRYPTION = 4,               // UE4.17+ - encrypts only pak file index data leaving file content as is
+	RELATIVE_CHUNK_OFFSETS = 5,         // UE4.20+
+	DELETE_RECORDS = 6,                 // UE4.21+ - this constant is not used in UE4 code
+	ENCRYPTION_KEY_GUID = 7,            // ... allows to use multiple encryption keys over the single project
+	FNAME_BASED_COMPRESSION_METHOD = 8, // UE4.22+ - use string instead of enum for compression method
+	FROZEN_INDEX = 9,
+	PATH_HASH_INDEX = 10,
+	FNV64BUGFIX = 11,
+
+
+	LAST,
+	INVALID,
+	LATEST = LAST - 1
+};
+
+struct PakFile {
+	struct Info {
+		static const u32 OFFSET = 221;
+
+		Guid guid;
+		bool isEncrypted;
+		u32 magic;
+		EPakVersion version;
+		i64 indexOffset;
+		i64 indexSize;
+		FSHAHash hash;
+		bool isFrozen = false;
+		char compressionName[32];
+
+		void serialize(DataBuffer &buffer) {
+			size_t start = buffer.pos;
+
+			if (buffer.loading) {
+				buffer.pos = buffer.size - OFFSET;
+			}
+
+			buffer.serialize(guid);
+			buffer.serialize(isEncrypted);
+			buffer.serialize(magic);
+			if (magic != 0x5A6F12E1) {
+				return;
+			}
+
+			buffer.serialize(version);
+			buffer.watch([&]() { buffer.serialize(indexOffset); });
+			buffer.watch([&]() { buffer.serialize(indexSize); });
+			buffer.serialize(hash);
+
+			if (version == EPakVersion::FROZEN_INDEX) {
+				buffer.serialize(isFrozen);
+			}
+
+			buffer.serialize(compressionName);
+
+			if (!buffer.loading) {
+				std::vector<u8> nullData;
+				nullData.resize(OFFSET - (buffer.pos - start));
+				buffer.serialize(nullData.data(), nullData.size());
+			}
+		}
+	};
+
+	struct PakEntry {
+		std::string name;
+
+		struct EntryData {
+			i64 offset;
+			i64 size;
+			i64 uncompressedSize;
+			i32 compressionMethodIdx;
+			FSHAHash hash;
+
+			u8 flags;
+			u32 compressionBlockSize;
+			
+
+			// Flags for serialization (volatile)
+			bool inFilePrefix = false;
+			//
+
+			void serialize(DataBuffer &buffer) {
+				if (inFilePrefix) {
+					i64 null = 0;
+					buffer.serialize(null);
+				}
+				else {
+					buffer.watch([&]() { buffer.serialize(offset); });
+				}
+
+				buffer.watch([&]() { buffer.serialize(size); });
+				buffer.watch([&]() { buffer.serialize(uncompressedSize); });
+				buffer.serialize(compressionMethodIdx);
+				buffer.watch([&]() { buffer.serialize(hash); });
+				if (compressionMethodIdx != 0) {
+
+				}
+				buffer.serialize(flags);
+				buffer.serialize(compressionBlockSize);
+			}
+		};
+		EntryData entryData;
+
+		struct PakAssetData {
+			AssetHeader *header;
+			AssetData data;
+			size_t size;
+
+			void serialize(DataBuffer &buffer) {
+				AssetCtx ctx;
+				ctx.header = header;
+				buffer.ctx_ = &ctx;
+				buffer.serialize(data);
+
+				header->fileSize_minusFour = buffer.size + header->totalHeaderSize - 4;
+				size = buffer.size;
+
+				for (auto &&c : header->catagories) {
+					c.startV += header->totalHeaderSize;
+				}
+			}
+		};
+
+		std::variant<AssetHeader, PakAssetData> data;
+		
+
+		void serialize(DataBuffer &buffer) {
+			buffer.serialize(name);
+
+			size_t start = buffer.pos;
+			buffer.serialize(entryData);
+			u32 structOffset = buffer.pos - start;
+
+			if (buffer.loading) {
+				size_t currentPos = buffer.pos;
+
+				if (name.find(".uasset") != std::string::npos) {
+					DataBuffer assetBuffer;
+					assetBuffer.buffer = buffer.buffer + entryData.offset + structOffset;
+					assetBuffer.size = entryData.uncompressedSize;
+
+					AssetHeader header;
+					assetBuffer.serialize(header);
+					data = header;
+				}
+				else if (name.find(".uexp") != std::string::npos) {
+					auto searchStr = name.substr(0, name.size() - 5) + ".uasset";
+
+					AssetHeader *foundHeader = nullptr;
+					for (auto &&e : buffer.ctx<PakFile>().entries) {
+						if (e.name == searchStr) {
+							foundHeader = &std::get<AssetHeader>(e.data);
+						}
+					}
+
+					if (foundHeader) {
+						PakAssetData pakData;
+						pakData.header = foundHeader;
+
+						DataBuffer assetBuffer;
+						assetBuffer.buffer = buffer.buffer + entryData.offset + structOffset;
+						assetBuffer.size = entryData.uncompressedSize;
+						assetBuffer.serialize(pakData);
+
+						data = std::move(pakData);
+					}
+				}
+
+				buffer.pos = currentPos;
+			}
+		}
+	};
+
+
+	Info info_footer;
+	std::string mountPoint;
+	std::vector<PakEntry> entries;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.ctx_ = this;
+
+		if (buffer.loading) {
+			buffer.serialize(info_footer);
+			buffer.pos = info_footer.indexOffset;
+
+			buffer.serialize(mountPoint);
+			buffer.serialize(entries);
+		}
+		else {
+			for (auto &&e : entries) {
+				e.entryData.inFilePrefix = true;
+				buffer.serialize(e.entryData);
+				e.entryData.inFilePrefix = false;
+
+				std::visit([&](auto &&d) {
+					DataBuffer b = buffer.setupFromHere();
+					b.serialize(d);
+					buffer.pos = b.pos + b.derivedBuffer->offset;
+				}, e.data);
+
+				if (auto asset = std::get_if<PakEntry::PakAssetData>(&e.data)) {
+					e.entryData.size = asset->size;
+					e.entryData.uncompressedSize = asset->size;
+				}
+			}
+
+			buffer.serialize(mountPoint);
+			buffer.serialize(entries);
+			buffer.serialize(info_footer);
+		}
 	}
 };
