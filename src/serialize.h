@@ -25,6 +25,8 @@ struct DataBuffer {
 	};
 	std::vector<WatchedValue> watchedValues;
 
+	std::vector<std::function<void(DataBuffer &)>> finalizeFunctions;
+
 	struct DerivedBuffer {
 		DataBuffer *base = nullptr;
 		size_t offset = 0;
@@ -61,6 +63,10 @@ struct DataBuffer {
 		for (auto &&w : watchedValues) {
 			memcpy(buffer + w.buffer_pos, w.data, w.size);
 		}
+
+		for (auto &&f : finalizeFunctions) {
+			f(*this);
+		}
 		watchedValues.clear();
 	}
 
@@ -70,6 +76,7 @@ struct DataBuffer {
 		dB.offset = pos;
 
 		DataBuffer newBuffer = *this;
+		newBuffer.buffer = nullptr;
 		newBuffer.pos = 0;
 		if (loading) {
 			newBuffer.size = size - pos;
@@ -123,7 +130,7 @@ struct DataBuffer {
 			return;
 		}
 
-		//constexpr u32 dbgpos = 4405;
+		//constexpr u32 dbgpos = 4346;
 		//if (!loading) {
 		//	if (pos <= dbgpos && pos + data_size > dbgpos) {
 		//		__debugbreak();

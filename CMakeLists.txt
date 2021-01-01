@@ -11,6 +11,7 @@ file(GLOB SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/fuser_asset.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/serialize.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/sha1.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_demo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_draw.cpp

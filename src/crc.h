@@ -1,4 +1,6 @@
 //From Crc.cpp
+#pragma once
+
 #include "core_types.h"
 
 struct CRC {

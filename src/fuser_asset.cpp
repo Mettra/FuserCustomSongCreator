@@ -3,6 +3,7 @@
 #include "imgui_stdlib.h"
 #include "crc.h"
 #include <optional>
+#include <algorithm>
 
 struct ImSubregion {
 	ImSubregion(void* p) {
@@ -225,7 +226,8 @@ void display_asset(Asset &asset) {
 	ImGui::PushID(&asset);
 	dispCtx.header = &asset.header;
 
-	ImGui::Begin("Asset");
+	std::string name = "Asset: " + std::to_string((u32)&asset);
+	ImGui::Begin(name.c_str());
 
 	if (ImGui::CollapsingHeader("Names")) {
 		size_t i = 0;
@@ -298,22 +300,47 @@ void window_loop() {
 	if (ImGui::Button("Load")) {
 
 #ifdef DO_ASSET_FILE
-		//std::ifstream infile("DT_UnlocksSongs.uasset", std::ios_base::binary);
-		//std::ifstream uexpfile("DT_UnlocksSongs.uexp", std::ios_base::binary);
-
-		std::ifstream infile("Meta_dornthisway.uasset", std::ios_base::binary);
-		std::ifstream uexpfile("Meta_dornthisway.uexp", std::ios_base::binary);
-
-		std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
-		fileData.insert(fileData.end(), std::istreambuf_iterator<char>(uexpfile), std::istreambuf_iterator<char>());
-
-		DataBuffer dataBuf;
-		dataBuf.setupVector(fileData);
 		{
+			std::ifstream infile("DT_0.uasset", std::ios_base::binary);
+			std::ifstream uexpfile("DT_0.uexp", std::ios_base::binary);
+
+			//std::ifstream infile("DT_UnlocksSongs.uasset", std::ios_base::binary);
+			//std::ifstream uexpfile("DT_UnlocksSongs.uexp", std::ios_base::binary);
+
+			//std::ifstream infile("Meta_dornthisway.uasset", std::ios_base::binary);
+			//std::ifstream uexpfile("Meta_dornthisway.uexp", std::ios_base::binary);
+
+			//std::ifstream infile("out.uasset", std::ios_base::binary);
+			//std::ifstream uexpfile("out.uexp", std::ios_base::binary);
+
+			std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+			fileData.insert(fileData.end(), std::istreambuf_iterator<char>(uexpfile), std::istreambuf_iterator<char>());
+
+			DataBuffer dataBuf;
+			dataBuf.setupVector(fileData);
+			
 			Asset asset;
 			dataBuf.serialize(asset);
 			assets.emplace_back(std::move(asset));
 		}
+
+#if 1
+		{
+
+			std::ifstream infile("DT_1.uasset", std::ios_base::binary);
+			std::ifstream uexpfile("DT_1.uexp", std::ios_base::binary);
+			std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+			fileData.insert(fileData.end(), std::istreambuf_iterator<char>(uexpfile), std::istreambuf_iterator<char>());
+
+			DataBuffer dataBuf;
+			dataBuf.setupVector(fileData);
+
+			Asset asset;
+			dataBuf.serialize(asset);
+			assets.emplace_back(std::move(asset));
+		}
+#endif
+
 		auto &&a = assets.back();
 #endif
 
@@ -337,6 +364,52 @@ void window_loop() {
 			dataBuf.setupVector(fileData);
 			dataBuf.serialize(pak);
 
+			for (auto &&e : pak.entries) {
+				if (e.name == "DT_UnlocksSongs.uexp") {
+					auto &&data = std::get<PakFile::PakEntry::PakAssetData>(e.data);
+
+					if (auto cat = std::get_if<DataTableCategory>(&data.data.catagoryValues[0].value)) {
+						std::vector<u8> cloneData;
+						{
+							AssetCtx ctx;
+							ctx.header = data.header;
+							ctx.parseHeader = false;
+							ctx.length = 0;
+
+							DataBuffer entryCloneBuffer;
+							entryCloneBuffer.ctx_ = &ctx;
+							entryCloneBuffer.loading = false;
+							entryCloneBuffer.setupVector(cloneData);
+
+							cat->entries[13].serialize(entryCloneBuffer);
+						}
+					
+						DataTableCategory::Entry e;
+						e.value.type.ref = cat->dataType.ref;					
+						
+						{
+							AssetCtx ctx;
+							ctx.header = data.header;
+							ctx.parseHeader = false;
+							ctx.length = 0;
+
+							DataBuffer entryCloneBuffer;
+							entryCloneBuffer.ctx_ = &ctx;
+							entryCloneBuffer.setupVector(cloneData);
+
+							e.serialize(entryCloneBuffer);
+						}
+
+						e.rowName = data.header->findOrCreateName("dornthisway");
+						std::get<NameProperty>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(data.header->findName("unlockName"))->value).name = e.rowName;
+						std::get<PrimitiveProperty<i32>>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(data.header->findName("audioCreditsCost"))->value).data = 0;
+						
+						cat->entries.emplace_back(std::move(e));
+					}
+					break;
+				}
+			}
+
 			std::vector<u8> outData;
 			DataBuffer outBuf;
 			outBuf.setupVector(outData);
@@ -344,7 +417,7 @@ void window_loop() {
 			pak.serialize(outBuf);
 			outBuf.finalize();
 
-			std::ofstream outPak("out_test.pak", std::ios_base::binary);
+			std::ofstream outPak("D:/Program Files (x86)/Steam/steamapps/common/Fuser/Fuser/Content/Paks/customSongsUnlocked_P.pak", std::ios_base::binary);
 			outPak.write((char*)outBuf.buffer, outBuf.size);
 
 			test_buffer(dataBuf, outBuf);
@@ -371,7 +444,7 @@ void window_loop() {
 				sigFile.serialize(sigOutBuf);
 				sigOutBuf.finalize();
 
-				std::ofstream outPak("out_test.sig", std::ios_base::binary);
+				std::ofstream outPak("D:/Program Files (x86)/Steam/steamapps/common/Fuser/Fuser/Content/Paks/customSongsUnlocked_P.sig", std::ios_base::binary);
 				outPak.write((char*)sigOutBuf.buffer, sigOutBuf.size);
 
 				std::ifstream infile("unlock_songs_P.sig", std::ios_base::binary);
@@ -441,8 +514,10 @@ void window_loop() {
 		}
 #endif
 
-#if 0
+#if defined(DO_ASSET_FILE) && 1
 		if (auto cat = std::get_if<DataTableCategory>(&a.data.catagoryValues[0].value)) {
+
+#if 0
 			DataBuffer entryCloneBuffer;
 			AssetCtx ctx;
 			ctx.header = &a.header;
@@ -463,12 +538,14 @@ void window_loop() {
 			e.serialize(entryCloneBuffer);
 			e.rowName = a.header.findOrCreateName("dornthisway");
 			std::get<NameProperty>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(a.header.findName("unlockName"))->value).name.ref = e.rowName.ref;
-			std::get<EnumProperty>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(a.header.findName("unlockCategory"))->value).value = a.header.findOrCreateName("EUnlockCategory::DLC");
+			//std::get<EnumProperty>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(a.header.findName("unlockCategory"))->value).value = a.header.findOrCreateName("EUnlockCategory::DLC");
+			std::get<PrimitiveProperty<i32>>(std::get<IPropertyDataList*>(e.value.values[0]->v)->get(a.header.findName("audioCreditsCost"))->value).data = 0;
 			cat->entries.emplace_back(std::move(e));
+#endif
 		}
 #endif
 
-#if 0
+#if defined(DO_ASSET_FILE) && 0
 		std::vector<u8> outData;
 		DataBuffer outBuf;
 		outBuf.setupVector(outData);
@@ -476,14 +553,14 @@ void window_loop() {
 		assets.back().serialize(outBuf);
 		outBuf.finalize();
 
-		std::ofstream outAsset("D:/Mettra_User/Downloads/UnrealPakSwitchv6/UnrealPakSwitch/Fuser/Content/DLC/Songs/dornthisway/Meta_dornthisway.uasset", std::ios_base::binary);
-		std::ofstream outUexp("D:/Mettra_User/Downloads/UnrealPakSwitchv6/UnrealPakSwitch/Fuser/Content/DLC/Songs/dornthisway/Meta_dornthisway.uexp", std::ios_base::binary);
+		//std::ofstream outAsset("D:/Mettra_User/Downloads/UnrealPakSwitchv6/UnrealPakSwitch/Fuser/Content/DLC/Songs/dornthisway/Meta_dornthisway.uasset", std::ios_base::binary);
+		//std::ofstream outUexp("D:/Mettra_User/Downloads/UnrealPakSwitchv6/UnrealPakSwitch/Fuser/Content/DLC/Songs/dornthisway/Meta_dornthisway.uexp", std::ios_base::binary);
 		
 		//std::ofstream outAsset("D:/Mettra_User/Downloads/UnrealPakSwitchv6/UnrealPakSwitch/Fuser/Content/Gameplay/Meta/DT_UnlocksSongs.uasset", std::ios_base::binary);
 		//std::ofstream outUexp("D:/Mettra_User/Downloads/UnrealPakSwitchv6/UnrealPakSwitch/Fuser/Content/Gameplay/Meta/DT_UnlocksSongs.uexp", std::ios_base::binary);
 		
-		//std::ofstream outAsset("out.uasset", std::ios_base::binary);
-		//std::ofstream outUexp("out.uexp", std::ios_base::binary);
+		std::ofstream outAsset("out.uasset", std::ios_base::binary);
+		std::ofstream outUexp("out.uexp", std::ios_base::binary);
 
 		outAsset.write((char*)outBuf.buffer, a.header.catagories[0].startV);
 		outUexp.write((char*)outBuf.buffer + a.header.catagories[0].startV, outBuf.size - a.header.catagories[0].startV);

@@ -367,10 +367,10 @@ void MapProperty::serialize(DataBuffer &buffer) {
 }
 
 
-const std::string& StringRef32::getString(const AssetHeader &header) {
+const std::string& StringRef32::getString(const AssetHeader &header) const {
 	return header.getHeaderRef(ref);
 }
 
-const std::string& StringRef64::getString(const AssetHeader &header) {
+const std::string& StringRef64::getString(const AssetHeader &header) const {
 	return header.getHeaderRef(ref);
 }

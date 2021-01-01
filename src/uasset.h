@@ -1,5 +1,7 @@
 #include "core_types.h"
 #include "serialize.h"
+#include "sha1.h"
+#include "crc.h"
 
 struct AssetHeader;
 
@@ -55,8 +57,8 @@ struct StringRef32 {
 		}
 	}
 
-	const std::string& getString(const AssetHeader &header);
-	const std::string& getString(const AssetHeader *header) {
+	const std::string& getString(const AssetHeader &header) const;
+	const std::string& getString(const AssetHeader *header) const {
 		if (header) {
 			return getString(*header);
 		}
@@ -82,8 +84,8 @@ struct StringRef64 {
 	StringRef64() {}
 	StringRef64(StringRef32 r) : ref(r.ref), str(r.str) {}
 
-	const std::string& getString(const AssetHeader &header);
-	const std::string& getString(const AssetHeader *header) {
+	const std::string& getString(const AssetHeader &header) const;
+	const std::string& getString(const AssetHeader *header) const {
 		if (header) {
 			return getString(*header);
 		}
@@ -104,28 +106,61 @@ struct StringRef64 {
 
 
 struct Catagory {
-	i32 connection;
-	i32 connect;
-	i32 link;
-	i32 typeIdx;
-	i64 garbageOne;
-	i16 type;
-	i16 garbageNew;
-	i32 lengthV;
-	i32 garbageTwo;
-	i32 startV;
+	i32 classIdx;
+	i32 superIdx;
+	i32 templateIdx;
+	i32 outerIdx;
+	u64 objectName;
+	i32 objectFlags;
+
+	i64 lengthV;
+	i64 startV;
+
+	i32 forcedExport;
+	i32 notForClient;
+	i32 notForServer;
+	
+	Guid packageGuid;
+	u32 packageFlags;
+
+	i32 notAlwaysLoadedForEditorGame;
+	i32 isAsset;
+
+	i32 firstExportDependency;
+	i32 serializationBeforeSerializationDependencies;
+	i32 createBeforeSerializationDependencies;
+	i32 serializationBeforeCreateDependencies;
+	i32 createBeforeCreateDependencies;
 
 	void serialize(DataBuffer &buffer) {
-		buffer.serialize(connection);
-		buffer.serialize(connect);
-		buffer.serialize(link);
-		buffer.serialize(typeIdx);
-		buffer.serialize(garbageOne);
-		buffer.serialize(type);
-		buffer.serialize(garbageNew);
+		buffer.serialize(classIdx);
+		buffer.serialize(superIdx);
+		
+		buffer.serialize(templateIdx);
+
+		buffer.serialize(outerIdx);
+		buffer.serialize(objectName);
+
+		buffer.serialize(objectFlags);
+
 		buffer.watch([&]() { buffer.serialize(lengthV); });
-		buffer.serialize(garbageTwo);
 		buffer.watch([&]() { buffer.serialize(startV); });
+
+		buffer.serialize(forcedExport);
+		buffer.serialize(notForClient);
+		buffer.serialize(notForServer);
+
+		buffer.serialize(packageGuid);
+		buffer.serialize(packageFlags);
+
+		buffer.serialize(notAlwaysLoadedForEditorGame);
+		buffer.serialize(isAsset);
+
+		buffer.serialize(firstExportDependency);
+		buffer.serialize(serializationBeforeSerializationDependencies);
+		buffer.serialize(createBeforeSerializationDependencies);
+		buffer.serialize(serializationBeforeCreateDependencies);
+		buffer.serialize(createBeforeCreateDependencies);
 	}
 };
 
@@ -153,29 +188,40 @@ struct Version {
 	}
 };
 
+struct CustomVersion {
+	Guid key;
+	i32 version;
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(key);
+		buffer.serialize(version);
+	}
+};
+
 struct AssetHeader {
 	u32 magic;
 	i32 legacyFileVersion;
 	i32 legacyUE3Version;
 	i32 UE4FileVersion;
 	i32 fileVersionLincenceeUE4;
-	std::vector<i32> customVersions;
+	std::vector<CustomVersion> customVersions;
 	i32 totalHeaderSize;
 	std::string name;
 	u32 packageFlags;
-	i32 stringCount;
-	char unk_buffer[20];
-	i32 headerSize;
-	i64 unk;
-	i32 dataCategoryCount;
-	i32 section3Offset;
-	i32 sectionTwoLinkCount;
-	i32 sectionTwoOffset;
-	i32 sectionFourOffset;
-	i32 sectionFiveStringCount;
-	i32 sectionFiveOffset;
+	i32 nameCount;
+	i32 nameOffset;
+	std::string localizationId;
+	i32 gatherableTextDataCount;
+	i32 exportsCount;
+	i32 exportsOffset;
+	i32 importCount;
+	i32 importOffset;
+	i32 dependenciesOffset;
+	i32 softPackageReferencesCount;
+	i32 softPackageReferencesOffset;
 
-	i64 another_unk;
+	i32 searchableNamesOffset;
+	i32 thumbnailTableOffset;
+
 	Guid assetGUID;
 
 	struct Generation {
@@ -192,22 +238,38 @@ struct AssetHeader {
 	Version savedByVersion;
 	Version compatibleWithVersion;
 	u32 compressionFlags;
+
+	struct CompressedChunk {
+		i32 data[4];
+
+		void serialize(DataBuffer &buffer) {
+			buffer.serialize(data);
+		}
+	};
+	std::vector<CompressedChunk> compressedChunks;
+
 	u32 packageSource;
 
-	i32 hash;
-	i32 unk_zero;
+	std::vector<std::string> additionalPackagesToCook;
+
 	i32 uexpDataOffset;
-	i32 fileSize_minusFour;
+	i64 fileSize_minusFour;
+
+	i32 worldTileInfoDataOffset;
+	std::vector<i32> chunkIDs;
+	i32 preloadDependencyCount;
+	i32 preloadDependencyOffset;
 
 	std::vector<UnrealName> names;
 	std::vector<Link> links;
 	std::vector<Catagory> catagories;
-	char unk_buffer_2[64];
 	std::vector<CatagoryRef> catagoryGroups;
 	std::vector<std::string> section5Strings;
 
 	u32 uexpDataCount;
 	std::vector<i32> uexpData;
+
+	std::vector<i32> preloadDependencies;
 
 	u64 getLinkRef(i32 idx) const {
 		if (idx < 0) {
@@ -238,7 +300,6 @@ struct AssetHeader {
 		UnrealName name;
 		name.name = str;
 		names.emplace_back(name);
-		stringCount = names.size();
 
 		StringRef32 r;
 		r.ref = idx;
@@ -260,9 +321,13 @@ struct AssetHeader {
 	}
 
 	void serialize(DataBuffer &buffer) {
-		if (generations.size() > 0) {
-			generations[0].exportCount = dataCategoryCount;
-			generations[0].nameCount = stringCount;
+		if (!buffer.loading) {
+			nameCount = names.size();
+
+			if (generations.size() > 0) {
+				generations[0].exportCount = exportsCount;
+				generations[0].nameCount = nameCount;
+			}
 		}
 
 		size_t start = 0;
@@ -281,32 +346,44 @@ struct AssetHeader {
 		buffer.watch([&]() { buffer.serialize(totalHeaderSize); });
 		buffer.serialize(name);
 		buffer.serialize(packageFlags);
-		buffer.serialize(stringCount);
-		buffer.serialize(headerSize);
-		buffer.serialize(unk);
-		buffer.serialize(dataCategoryCount);
-		buffer.watch([&]() { buffer.serialize(section3Offset); });
-		buffer.serialize(sectionTwoLinkCount);
-		buffer.watch([&]() { buffer.serialize(sectionTwoOffset); });
-		buffer.watch([&]() { buffer.serialize(sectionFourOffset); });
-		buffer.serialize(sectionFiveStringCount);
-		buffer.watch([&]() { buffer.serialize(sectionFiveOffset); });
-		buffer.serialize(another_unk);
+		buffer.serialize(nameCount);
+		buffer.watch([&]() { buffer.serialize(nameOffset); });
+		buffer.serialize(localizationId);
+		buffer.serialize(gatherableTextDataCount);
+		
+		buffer.serialize(exportsCount);
+		buffer.watch([&]() { buffer.serialize(exportsOffset); });
+
+		buffer.serialize(importCount);
+		buffer.watch([&]() { buffer.serialize(importOffset); });
+		
+		buffer.watch([&]() { buffer.serialize(dependenciesOffset); });
+
+		buffer.serialize(softPackageReferencesCount);
+		buffer.watch([&]() { buffer.serialize(softPackageReferencesOffset); });
+
+		buffer.serialize(searchableNamesOffset);
+		buffer.serialize(thumbnailTableOffset);
+
 		buffer.serialize(assetGUID);
 		buffer.serialize(generations);
 
 		buffer.serialize(savedByVersion);
 		buffer.serialize(compatibleWithVersion);
+		
 		buffer.serialize(compressionFlags);
-		buffer.serialize(packageSource);
+		buffer.serialize(compressedChunks);
 
-		buffer.serialize(hash);
-		buffer.serialize(unk_zero);
+		buffer.serialize(packageSource);
+		buffer.serialize(additionalPackagesToCook);
 
 		buffer.watch([&]() { buffer.serialize(uexpDataOffset); });
 		buffer.watch([&]() { buffer.serialize(fileSize_minusFour); });
 
-		buffer.serialize(unk_buffer);
+		buffer.serialize(worldTileInfoDataOffset);
+		buffer.serialize(chunkIDs);
+		buffer.serialize(preloadDependencyCount);
+		buffer.watch([&]() { buffer.serialize(preloadDependencyOffset); });
 
 		auto jumpOrSetOffset = [&buffer](auto &pos) {
 			if (buffer.loading) {
@@ -317,32 +394,29 @@ struct AssetHeader {
 			}
 		};
 
-		jumpOrSetOffset(headerSize);
-		buffer.serializeWithSize(names, stringCount);
+		jumpOrSetOffset(nameOffset);
+		buffer.serializeWithSize(names, nameCount);
 
-		jumpOrSetOffset(sectionTwoOffset);
-		buffer.serializeWithSize(links, sectionTwoLinkCount);
+		jumpOrSetOffset(importOffset);
+		buffer.serializeWithSize(links, importCount);
 
-		jumpOrSetOffset(section3Offset);
-		buffer.serializeWithSize(catagories, dataCategoryCount);
+		jumpOrSetOffset(exportsOffset);
+		buffer.serializeWithSize(catagories, exportsCount);
 
-		buffer.serialize(unk_buffer_2);
+		jumpOrSetOffset(dependenciesOffset);
+		buffer.serializeWithSize(catagoryGroups, exportsCount);
 
-		jumpOrSetOffset(sectionFourOffset);
-		buffer.serializeWithSize(catagoryGroups, dataCategoryCount);
-
-		if (sectionFiveOffset != 0) {
-			jumpOrSetOffset(sectionFiveOffset);
-			buffer.serializeWithSize(section5Strings, sectionFiveStringCount);
+		if (softPackageReferencesOffset != 0) {
+			jumpOrSetOffset(softPackageReferencesOffset);
+			buffer.serializeWithSize(section5Strings, softPackageReferencesCount);
 		}
 
-		if (totalHeaderSize > 0 && dataCategoryCount > 0) {
+		if (totalHeaderSize > 0 && exportsCount > 0) {
 			jumpOrSetOffset(uexpDataOffset);
+			buffer.serialize(uexpData);
 
-			if (buffer.loading) {
-				uexpDataCount = (catagories[0].startV - buffer.pos) / sizeof(i32);
-			}
-			buffer.serializeWithSize(uexpData, uexpDataCount);
+			jumpOrSetOffset(preloadDependencyOffset);
+			buffer.serializeWithSize(preloadDependencies, preloadDependencyCount);
 		}
 
 		if (!buffer.loading) totalHeaderSize = buffer.pos;
@@ -808,7 +882,7 @@ struct AssetData {
 
 				CatagoryValue v;
 
-				std::string name = header.getHeaderRef(header.getLinkRef(c.connection));
+				std::string name = header.getHeaderRef(header.getLinkRef(c.classIdx));
 				if (name == "DataTable") {
 					DataTableCategory dataCat;
 					b.serialize(dataCat);
@@ -897,13 +971,42 @@ struct SaveFile {
 };
 
 
-struct FSHAHash {
-	char data[20];
-
+struct SHAHash {
+	u8 data[20];
 	void serialize(DataBuffer &buffer) {
-		buffer.serialize(data);
+		buffer.watch([&]() { buffer.serialize(data); });
 	}
 };
+
+
+struct FinalizeHash { 
+	size_t start;
+	size_t size;
+	SHAHash *hash;
+
+	void operator()(DataBuffer &b) {
+		SHA1 computedHash;
+		computedHash.reset();
+		computedHash.update(b.buffer + start, size);
+		computedHash.finalize();
+
+		memcpy(hash->data, computedHash.digest, sizeof(computedHash.digest));
+
+		auto&& myData = hash->data;
+		bool found = false;
+		for (auto &&w : b.watchedValues) {
+			if (w.data == (u8*)myData) {
+				memcpy(b.buffer + w.buffer_pos, myData, sizeof(myData));
+				found = true;
+			}
+		}
+
+		if (!found) {
+			__debugbreak();
+		}
+	}
+};
+//
 
 enum class EPakVersion : u32
 {
@@ -935,7 +1038,7 @@ struct PakFile {
 		EPakVersion version;
 		i64 indexOffset;
 		i64 indexSize;
-		FSHAHash hash;
+		SHAHash hash;
 		bool isFrozen = false;
 		char compressionName[32];
 
@@ -956,7 +1059,7 @@ struct PakFile {
 			buffer.serialize(version);
 			buffer.watch([&]() { buffer.serialize(indexOffset); });
 			buffer.watch([&]() { buffer.serialize(indexSize); });
-			buffer.serialize(hash);
+			buffer.watch([&]() { buffer.serialize(hash); });
 
 			if (version == EPakVersion::FROZEN_INDEX) {
 				buffer.serialize(isFrozen);
@@ -980,7 +1083,7 @@ struct PakFile {
 			i64 size;
 			i64 uncompressedSize;
 			i32 compressionMethodIdx;
-			FSHAHash hash;
+			SHAHash hash;
 
 			u8 flags;
 			u32 compressionBlockSize;
@@ -1099,6 +1202,8 @@ struct PakFile {
 		}
 		else {
 			for (auto &&e : entries) {
+				e.entryData.offset = buffer.pos;
+
 				e.entryData.inFilePrefix = true;
 				buffer.serialize(e.entryData);
 				e.entryData.inFilePrefix = false;
@@ -1107,16 +1212,30 @@ struct PakFile {
 					DataBuffer b = buffer.setupFromHere();
 					b.serialize(d);
 					buffer.pos = b.pos + b.derivedBuffer->offset;
-				}, e.data);
 
-				if (auto asset = std::get_if<PakEntry::PakAssetData>(&e.data)) {
-					e.entryData.size = asset->size;
-					e.entryData.uncompressedSize = asset->size;
-				}
+					FinalizeHash fh;
+					fh.start = b.derivedBuffer->offset;
+					fh.size = b.size;
+					fh.hash = &e.entryData.hash;
+					buffer.finalizeFunctions.emplace_back(std::move(fh));
+
+					e.entryData.size = b.size;
+					e.entryData.uncompressedSize = b.size;
+				}, e.data);
 			}
 
+			info_footer.indexOffset = buffer.pos;
 			buffer.serialize(mountPoint);
 			buffer.serialize(entries);
+
+			info_footer.indexSize = buffer.pos - info_footer.indexOffset;
+
+			FinalizeHash fh;
+			fh.start = info_footer.indexOffset;
+			fh.size = info_footer.indexSize;
+			fh.hash = &info_footer.hash;
+			buffer.finalizeFunctions.emplace_back(std::move(fh));
+
 			buffer.serialize(info_footer);
 		}
 	}
