@@ -252,8 +252,8 @@ struct AssetHeader {
 
 	std::vector<std::string> additionalPackagesToCook;
 
-	i32 uexpDataOffset;
-	i64 fileSize_minusFour;
+	i32 assetRegistryDataOffset;
+	i64 bulkDataStartOffset;
 
 	i32 worldTileInfoDataOffset;
 	std::vector<i32> chunkIDs;
@@ -266,17 +266,16 @@ struct AssetHeader {
 	std::vector<CatagoryRef> catagoryGroups;
 	std::vector<std::string> section5Strings;
 
-	u32 uexpDataCount;
 	std::vector<i32> uexpData;
-
 	std::vector<i32> preloadDependencies;
 
-	u64 getLinkRef(i32 idx) const {
+	const Link& getLinkRef(i32 idx) const {
 		if (idx < 0) {
-			return links[-(idx + 1)].property;
+			return links[-(idx + 1)];
 		}
 		else {
-			return -idx;
+			static Link nullLink;
+			return nullLink;
 		}
 	}
 
@@ -377,8 +376,8 @@ struct AssetHeader {
 		buffer.serialize(packageSource);
 		buffer.serialize(additionalPackagesToCook);
 
-		buffer.watch([&]() { buffer.serialize(uexpDataOffset); });
-		buffer.watch([&]() { buffer.serialize(fileSize_minusFour); });
+		buffer.watch([&]() { buffer.serialize(assetRegistryDataOffset); });
+		buffer.watch([&]() { buffer.serialize(bulkDataStartOffset); });
 
 		buffer.serialize(worldTileInfoDataOffset);
 		buffer.serialize(chunkIDs);
@@ -412,7 +411,7 @@ struct AssetHeader {
 		}
 
 		if (totalHeaderSize > 0 && exportsCount > 0) {
-			jumpOrSetOffset(uexpDataOffset);
+			jumpOrSetOffset(assetRegistryDataOffset);
 			buffer.serialize(uexpData);
 
 			jumpOrSetOffset(preloadDependencyOffset);
@@ -795,7 +794,7 @@ struct IPropertyDataList {
 	}
 };
 
-struct NormalCategory {
+struct UObject {
 	IPropertyDataList data;
 
 	void serialize(DataBuffer &buffer) {
@@ -804,7 +803,7 @@ struct NormalCategory {
 };
 
 struct DataTableCategory {
-	NormalCategory base;
+	UObject base;
 	StringRef32 dataType;
 
 	struct Entry {
@@ -830,7 +829,7 @@ struct DataTableCategory {
 			for (auto &&p : base.data.properties) {
 				if (p.nameRef.getString(header) == "RowStruct") {
 					if (auto objPtr = std::get_if<ObjectProperty>(&p.value)) {
-						dataType.ref = header.getLinkRef(objPtr->linkVal);
+						dataType.ref = header.getLinkRef(objPtr->linkVal).property;
 						break;
 					}
 				}
@@ -862,14 +861,191 @@ struct DataTableCategory {
 	}
 };
 
+struct HmxAudio {
+	struct PackageFile {
+		i32 unk0;
+		std::string fileName;
+		u32 null;
+		std::string fileType;
+		u64 totalSize;
+
+		struct MoggSampleResourceHeader {
+			char identifier[4];
+			u32 unk1_samples;
+			u32 sample_rate;
+			u32 maybe_channels;
+			u32 numberOfSamples;
+			u32 unk2;
+			u32 maybe_channels2;
+			u32 moggSize;
+
+			void serialize(DataBuffer &buffer) {
+				buffer.serialize(identifier);
+				buffer.serialize(unk1_samples);
+				buffer.serialize(sample_rate);
+				buffer.serialize(maybe_channels);
+				buffer.serialize(numberOfSamples);
+				buffer.serialize(unk2);
+				buffer.serialize(maybe_channels2);
+				buffer.serialize(moggSize);
+			}
+		};
+
+		std::variant<std::monostate, MoggSampleResourceHeader> resourceHeader;
+		std::vector<u8> fileData;
+
+
+		void serialize(DataBuffer &buffer) {
+			buffer.serialize(unk0);
+			buffer.serialize(fileName);
+			buffer.serialize(null);
+			buffer.serialize(fileType);
+			buffer.watch([&]() { buffer.serialize(totalSize); });
+
+			if (buffer.loading) {
+				if (fileType == "MoggSampleResource") {
+					MoggSampleResourceHeader header;
+					buffer.serialize(header);
+					buffer.serializeWithSize(fileData, header.moggSize);
+					resourceHeader = std::move(header);
+				}
+				else {
+					buffer.serializeWithSize(fileData, totalSize);
+				}
+			}
+			else {
+				u32 start = buffer.pos;
+
+				if (auto moggHeader = std::get_if<MoggSampleResourceHeader>(&resourceHeader)) {
+					moggHeader->moggSize = fileData.size();
+				}
+
+				std::visit([&](auto &&value) {
+					using T = std::decay_t<decltype(value)>;
+					if constexpr (!std::is_same_v<T, std::monostate>) {
+						buffer.serialize(value);
+					}
+				}, resourceHeader);
+
+				buffer.serializeWithSize(fileData, fileData.size());
+
+				totalSize = buffer.pos - start;
+			}
+		}
+	};
+
+	i64 numAudioFiles;
+	std::vector<PackageFile> audioFiles;
+
+	void serialize(DataBuffer &buffer) {
+		numAudioFiles = audioFiles.size();
+
+		buffer.serialize(numAudioFiles);
+		buffer.serializeWithSize(audioFiles, numAudioFiles);
+	}
+};
+
+struct HmxAssetFile {
+	StringRef64 assetName;
+	IPropertyDataList propList;
+
+	i32 null;
+	i64 someHash;
+	std::string originalFilename;
+
+	i32 unk1;
+	i32 unk2;
+
+	HmxAudio audio;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(assetName);
+		buffer.serialize(propList);
+		buffer.serialize(null);
+
+		buffer.serialize(someHash);
+		buffer.serialize(originalFilename);
+
+		buffer.serialize(unk1);
+		buffer.serialize(unk2);
+
+		if (unk2 == 0) {
+			buffer.serializeWithSize(audio.audioFiles, 1);
+		}
+		else {
+			buffer.serialize(audio);
+		}
+	}
+};
+
+struct HmxFusionAsset {
+	StringRef64 unkName0;
+	StringRef64 unkName1;
+
+	StringRef32 propName;
+
+	i64 someHash;
+	std::string originalFilename;
+
+	i32 unk_2;
+	i32 unk_3;
+
+	HmxAudio audio;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(unkName0);
+		buffer.serialize(unkName1);
+
+		if (unkName1.ref != 7) {
+			__debugbreak();
+		}
+
+		buffer.serialize(propName);
+
+		buffer.serialize(someHash);
+		buffer.serialize(originalFilename);
+
+		buffer.serialize(unk_2);
+		buffer.serialize(unk_3);
+		buffer.serialize(audio);
+	}
+};
+
+struct HmxMidiSongAsset {
+	StringRef64 unkName0;
+	IPropertyDataList propList;
+
+	i32 somethign;
+	i64 someHash;
+	std::string originalFilename;
+
+	StringRef32 unk1;
+	StringRef32 unk2;
+
+	HmxAudio audio;
+
+	void serialize(DataBuffer &buffer) {
+		buffer.serialize(unkName0);
+		buffer.serialize(propList);
+		buffer.serialize(somethign);
+
+		buffer.serialize(someHash);
+		buffer.serialize(originalFilename);
+
+		buffer.serialize(unk1);
+		buffer.serialize(unk2);
+	}
+};
+
 struct AssetData {
 	struct CatagoryValue {
-		using CatagoryVariant = std::variant<NormalCategory, DataTableCategory>;
+		using CatagoryVariant = std::variant<UObject, DataTableCategory, HmxAssetFile>;
 
 		CatagoryVariant value;
 		std::vector<u8> extraData;
 	};
 	std::vector<CatagoryValue> catagoryValues;
+	i32 footer;
 
 	void serialize(DataBuffer &buffer) {
 		auto &&header = *buffer.ctx<AssetCtx>().header;
@@ -882,16 +1058,21 @@ struct AssetData {
 
 				CatagoryValue v;
 
-				std::string name = header.getHeaderRef(header.getLinkRef(c.classIdx));
+				std::string name = header.getHeaderRef(header.getLinkRef(c.classIdx).property);
 				if (name == "DataTable") {
 					DataTableCategory dataCat;
 					b.serialize(dataCat);
 					v.value = std::move(dataCat);
 				}
+				else if (name == "HmxMidiSongAsset" || name == "HmxMidiFileAsset" || name == "HmxFusionAsset") {
+					HmxAssetFile asset;
+					b.serialize(asset);
+					v.value = std::move(asset);
+				}
 				else {
-					NormalCategory normalCat;
-					b.serialize(normalCat);
-					v.value = std::move(normalCat);
+					UObject object;
+					b.serialize(object);
+					v.value = std::move(object);
 				}
 
 				i32 nextStart = buffer.size - buffer.pos - 4;
@@ -919,16 +1100,24 @@ struct AssetData {
 					b.serialize(v);
 				}, c.value);
 
+				b.serializeWithSize(c.extraData, c.extraData.size());
+
 				header.catagories[idx].startV = start;
 				header.catagories[idx].lengthV = b.size;
 
 				buffer.pos = b.pos + b.derivedBuffer->offset;
-				buffer.serializeWithSize(c.extraData, c.extraData.size());
 				++idx;
 			}
+		}
 
-			i32 footer = 0x9E2A83C1;
-			buffer.serialize(footer);
+		header.bulkDataStartOffset = buffer.pos;
+		//If we knew how to serialize bulk data, we'd do it here
+
+		//
+
+		buffer.serialize(footer);
+		if (footer != 0x9E2A83C1) {
+			__debugbreak();
 		}
 	}
 };
@@ -945,8 +1134,6 @@ struct Asset {
 
 		buffer.serialize(header);
 		buffer.serialize(data);
-
-		header.fileSize_minusFour = buffer.size - 4;
 	}
 };
 
@@ -1126,12 +1313,12 @@ struct PakFile {
 				buffer.ctx_ = &ctx;
 				buffer.serialize(data);
 
-				header->fileSize_minusFour = buffer.size + header->totalHeaderSize - 4;
 				size = buffer.size;
 
 				for (auto &&c : header->catagories) {
 					c.startV += header->totalHeaderSize;
 				}
+				header->bulkDataStartOffset += header->totalHeaderSize;
 			}
 		};
 
