@@ -2,6 +2,7 @@
 #include "serialize.h"
 #include "sha1.h"
 #include "crc.h"
+#include "hmx_midifile.h"
 
 struct AssetHeader;
 
@@ -760,6 +761,16 @@ struct IPropertyDataList {
 		return nullptr;
 	}
 
+	PropertyData* get(AssetHeader *header, const std::string &name) {
+		for (auto &&p : properties) {
+			if (p.nameRef.getString(header) == name) {
+				return &p;
+			}
+		}
+
+		return nullptr;
+	}
+
 	void serialize(DataBuffer &buffer) {
 		bool parseHeader = buffer.ctx<AssetCtx>().parseHeader;
 		buffer.ctx<AssetCtx>().parseHeader = true;
@@ -891,7 +902,33 @@ struct HmxAudio {
 			}
 		};
 
-		std::variant<std::monostate, MoggSampleResourceHeader> resourceHeader;
+		struct MidiMusicResource {
+			i32 unk;
+			std::string midisong_name;
+			hmx_array root;
+			u8 unk2;
+			hmx_string midisong_engine_path;
+			hmx_string mid_engine_path;
+			i32 unk3;
+			hmx_string midi_track_name;
+			hmx_string patch_engine_path;
+			i32 unk5;
+
+			void serialize(DataBuffer &buffer) {
+				buffer.serialize(unk);
+				buffer.serialize(midisong_name);
+				buffer.serialize(root);
+				buffer.serialize(unk2);
+				buffer.serialize(midisong_engine_path);
+				buffer.serialize(mid_engine_path);
+				buffer.serialize(unk3);
+				buffer.serialize(midi_track_name);
+				buffer.serialize(patch_engine_path);
+				buffer.serialize(unk5);
+			}
+		};
+
+		std::variant<std::monostate, MoggSampleResourceHeader, MidiMusicResource> resourceHeader;
 		std::vector<u8> fileData;
 
 
@@ -908,6 +945,11 @@ struct HmxAudio {
 					buffer.serialize(header);
 					buffer.serializeWithSize(fileData, header.moggSize);
 					resourceHeader = std::move(header);
+				}
+				else if (fileType == "MidiMusicResource") {
+					MidiMusicResource resource;
+					buffer.serialize(resource);
+					resourceHeader = std::move(resource);
 				}
 				else {
 					buffer.serializeWithSize(fileData, totalSize);
@@ -1303,11 +1345,13 @@ struct PakFile {
 		EntryData entryData;
 
 		struct PakAssetData {
-			AssetHeader *header;
+			PakEntry *pakHeader;
 			AssetData data;
 			size_t size;
 
 			void serialize(DataBuffer &buffer) {
+				auto header = &std::get<AssetHeader>(pakHeader->data);
+
 				AssetCtx ctx;
 				ctx.header = header;
 				buffer.ctx_ = &ctx;
@@ -1324,7 +1368,6 @@ struct PakFile {
 
 		std::variant<AssetHeader, PakAssetData> data;
 		
-
 		void serialize(DataBuffer &buffer) {
 			buffer.serialize(name);
 
@@ -1347,16 +1390,16 @@ struct PakFile {
 				else if (name.find(".uexp") != std::string::npos) {
 					auto searchStr = name.substr(0, name.size() - 5) + ".uasset";
 
-					AssetHeader *foundHeader = nullptr;
+					PakEntry *foundHeader = nullptr;
 					for (auto &&e : buffer.ctx<PakFile>().entries) {
 						if (e.name == searchStr) {
-							foundHeader = &std::get<AssetHeader>(e.data);
+							foundHeader = &e;
 						}
 					}
 
 					if (foundHeader) {
 						PakAssetData pakData;
-						pakData.header = foundHeader;
+						pakData.pakHeader = foundHeader;
 
 						DataBuffer assetBuffer;
 						assetBuffer.buffer = buffer.buffer + entryData.offset + structOffset;

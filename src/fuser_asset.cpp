@@ -4,6 +4,8 @@
 #include "crc.h"
 #include <optional>
 #include <algorithm>
+#include <array>
+
 #include <filesystem>
 namespace fs = std::filesystem;
 
@@ -240,20 +242,20 @@ void display_category(HmxAssetFile &fusionAsset) {
 	}
 }
 
-void display_asset(Asset &asset) {
-	ImGui::PushID(&asset);
-	dispCtx.header = &asset.header;
+void display_asset(AssetData &assetData, AssetHeader *header) {
+	ImGui::PushID(&assetData);
+	dispCtx.header = header;
 
 	if (ImGui::CollapsingHeader("Names")) {
 		size_t i = 0;
-		for (auto &&n : asset.header.names) {
+		for (auto &&n : header->names) {
 			ImGui::InputText(("Name[" + std::to_string(i) + "]").c_str(), &n.name);
 			++i;
 		}
 	}
 
 	if (ImGui::CollapsingHeader("Categories")) {
-		for (auto &&c : asset.data.catagoryValues) {
+		for (auto &&c : assetData.catagoryValues) {
 			ImSubregion _(&c);
 
 			if (auto normCat = std::get_if<UObject>(&c.value)) {
@@ -281,7 +283,8 @@ lp = inst
 
 //#define DO_SAVE_FILE
 //#define DO_ASSET_FILE
-#define DO_PAK_FILE
+//#define DO_PAK_FILE
+#define DO_SONG_CREATION
 SaveFile f;
 
 PakFile pak;
@@ -294,22 +297,396 @@ void display_savefile(SaveFile &f) {
 	ImGui::End();
 }
 
-struct FuserAsset {
-	std::string name;
-	Asset assetData;
+
+struct CelType {
+	enum class Type {
+		Beat,
+		Bass,
+		Loop,
+		Lead
+	};
+	Type value;
+
+	const std::string& getPostfix() {
+		static std::string postfix_beat = "bt";
+		static std::string postfix_bass = "bs";
+		static std::string postfix_lead = "ld";
+		static std::string postfix_loop = "lp";
+
+		std::string typeStr;
+		switch (value) {
+		case Type::Beat:
+			return postfix_beat;
+
+		case Type::Bass:
+			return postfix_bass;
+
+		case Type::Lead:
+			return postfix_lead;
+
+		case Type::Loop:
+			return postfix_loop;
+		};
+
+		static std::string null;
+		return null;
+	}
+
+	std::string postfix(const std::string &name) {
+		return getPostfix() + name;
+	}
+
+	const std::string &getEnumValue() {
+		static std::string enum_beat = "ECelType::Beat";
+		static std::string enum_bass = "ECelType::Bass";
+		static std::string enum_lead = "ECelType::Lead";
+		static std::string enum_loop = "ECelType::Loop";
+
+		switch (value) {
+		case Type::Beat:
+			return enum_beat;
+
+		case Type::Bass:
+			return enum_bass;
+
+		case Type::Lead:
+			return enum_lead;
+
+		case Type::Loop:
+			return enum_loop;
+		};
+
+		static std::string null;
+		return null;
+	}
 };
 
-std::vector<FuserAsset> assets;
+
+struct SongSerializationCtx {
+	bool loading = true;
+	
+	std::string shortName;
+	std::string songName;
+	CelType curType;
+
+	PakFile *pak = nullptr;
+	PakFile::PakEntry *curEntry = nullptr;
+
+
+	PakFile::PakEntry *getFile(const std::string &fullPath) {
+		for (auto &&e : pak->entries) {
+			if (auto data = std::get_if<PakFile::PakEntry::PakAssetData>(&e.data)) {
+				if (e.name.find(fullPath) != std::string::npos) {
+					return &e;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	AssetHeader &getHeader(PakFile::PakEntry *entry = nullptr) {
+		if (entry == nullptr) entry = curEntry;
+
+		auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(entry->data);
+		return std::get<AssetHeader>(assetData.pakHeader->data);
+	}
+
+	template<typename T>
+	T* getProp(PakFile::PakEntry *entry, const std::string &propName) {
+		auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(entry->data);
+		AssetHeader *header = &std::get<AssetHeader>(assetData.pakHeader->data);
+		auto &&obj = std::get<UObject>(assetData.data.catagoryValues[0].value);
+
+		auto v = obj.data.get(header, propName);
+		if (!v) {
+			return nullptr;
+		}
+
+		return &std::get<T>(v->value);
+	}
+
+	template<typename T>
+	T* getProp(const std::string &propName) {
+		return getProp<T>(curEntry, propName);
+	}
+
+	void serializeName(const std::string &propName, std::string &serializedStr) {
+		auto &&prop = *getProp<NameProperty>(curEntry, propName);
+		if (loading) {
+			serializedStr = prop.name.getString(getHeader());
+		}
+		else {
+			getHeader().names[prop.name.ref].name = serializedStr;
+		}
+	}
+
+	void serializeString(const std::string &propName, std::string &serializedStr) {
+		auto &&prop = *getProp<StringProperty>(curEntry, propName);
+		if (loading) {
+			serializedStr = prop.str;
+		}
+		else {
+			prop.str = serializedStr;
+		}
+	}
+
+	void serializeText(const std::string &propName, std::string &serializedStr) {
+		auto &&prop = *getProp<TextProperty>(curEntry, propName);
+		if (loading) {
+			serializedStr = prop.strings.back();
+		}
+		else {
+			prop.strings.back() = serializedStr;
+		}
+	}
+
+	
+};
+
+struct SongPakEntry {
+	PakFile::PakEntry *e = nullptr;
+	std::string path;
+
+	void serialize(SongSerializationCtx &ctx, const std::string &path) {
+		if (ctx.loading) {
+			e = ctx.getFile(path);
+		}
+		else {
+			this->path = path;
+			e->name = path + ".uexp";
+			std::get<PakFile::PakEntry::PakAssetData>(e->data).pakHeader->name = path + ".uasset";
+		}
+	}
+};
+
+template<typename T>
+struct FileLink {
+	i64 linkVal;
+	T data;
+
+	void serialize(SongSerializationCtx &ctx) {
+		static const std::string prefix = "/Game/";
+
+		auto prevFile = ctx.curEntry;
+		auto &&header = ctx.getHeader();
+
+		if (ctx.loading) {
+			
+			auto &&linkedFile = header.getLinkRef(header.getLinkRef(linkVal).link);
+			data.file.e = ctx.getFile(header.getHeaderRef(linkedFile.property).substr(prefix.size()) + ".uexp");
+		}
+
+		if (data.file.e == nullptr) return;
+		ctx.curEntry = data.file.e;
+		data.serialize(ctx);
+		ctx.curEntry = prevFile;
+
+		if (!ctx.loading) {
+			ctx.getHeader().names[ctx.getHeader().getLinkRef(linkVal).property].name = fs::path(data.file.path).stem().string();
+
+			auto &&linkedFile = header.getLinkRef(header.getLinkRef(linkVal).link);
+			ctx.getHeader().names[linkedFile.property].name = prefix + data.file.path;
+		}
+	}
+};
+
+template<typename T>
+struct AssetLink {
+	T data;
+	StringRef32 ref;
+
+	void serialize(SongSerializationCtx &ctx) {
+		static const std::string prefix = "/Game/";
+		auto prevFile = ctx.curEntry;
+		auto &&header = ctx.getHeader();
+
+		if (ctx.loading) {
+			std::string fullPath = ref.getString(header);
+			auto pos = fullPath.rfind('.');
+			std::string assetPath = fullPath.substr(0, pos);
+			//std::string assetName = fullPath.substr(pos + 1);
+			data.file.e = ctx.getFile(assetPath.substr(prefix.size()) + ".uexp");
+		}
+
+		if (data.file.e == nullptr) return;
+		ctx.curEntry = data.file.e;
+		data.serialize(ctx);
+		ctx.curEntry = prevFile;
+
+		if (!ctx.loading) {
+			auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(data.file.e->data);
+			auto &&subHeader = std::get<AssetHeader>(assetData.pakHeader->data);
+			
+			header.names[ref.ref].name = prefix + data.file.path + "." + std::get<HmxAssetFile>(assetData.data.catagoryValues[0].value).assetName.getString(subHeader);
+		}
+	}
+};
+
+
+//////////
+
+struct MidiSongAsset {
+	SongPakEntry file;
+	bool major = false;
+
+	void serialize(SongSerializationCtx &ctx) {
+
+		if (!ctx.loading) {
+			file.serialize(ctx, "Audio/Songs/" + ctx.shortName + "/" + ctx.curType.postfix(ctx.shortName) + "/" + ctx.curType.postfix(ctx.shortName) + "_midisong_" + (major ? "maj" : "min"));
+		}
+	}
+};
+
+struct SongTransition {
+	SongPakEntry file;
+
+	std::string shortName;
+
+	void serialize(SongSerializationCtx &ctx) {
+
+		shortName = ctx.curType.postfix(ctx.shortName) + "_trans";
+		ctx.serializeName("ShortName", shortName);
+
+		if (!ctx.loading) {
+			ctx.serializeText("Title", ctx.songName);
+			file.serialize(ctx, "Audio/Songs/" + ctx.shortName + "/" + ctx.curType.postfix(ctx.shortName) + "/" + "Meta_" + ctx.curType.postfix(ctx.shortName) + "_trans");
+		}
+	}
+};
+
+struct CelData {
+	SongPakEntry file;
+
+	CelType type;
+	std::string shortName;
+	FileLink<SongTransition> songTransitionFile;
+	std::vector<AssetLink<MidiSongAsset>> majorAssets;
+	std::vector<AssetLink<MidiSongAsset>> minorAssets;
+
+	void serialize(SongSerializationCtx &ctx) {
+		
+
+		if (ctx.loading) {
+			auto celType = ctx.getProp<EnumProperty>(ctx.curEntry, "CelType");
+			if (celType == nullptr) {
+				type.value = CelType::Type::Beat; //Beat is the first value, and therefore default of the enum, so it isn't serialized in the file.
+			}
+			else {
+				auto celTypeStr = celType->value.getString(ctx.getHeader());
+				if (celTypeStr == "ECelType::Bass") {
+					type.value = CelType::Type::Bass;
+				}
+				else if (celTypeStr == "ECelType::Lead") {
+					type.value = CelType::Type::Lead;
+				}
+				else if (celTypeStr == "ECelType::Loop") {
+					type.value = CelType::Type::Loop;
+				}
+			}
+		}
+
+		
+
+		shortName = ctx.shortName + type.getPostfix();
+		ctx.serializeName("ShortName", shortName);
+		ctx.curType = type;
+
+		songTransitionFile.linkVal = ctx.getProp<ObjectProperty>("SongTransitionCelData")->linkVal;
+		songTransitionFile.serialize(ctx);
+
+		if (ctx.loading) {
+			for (auto &&v : ctx.getProp<ArrayProperty>("MajorMidiSongAssets")->values) {
+				AssetLink<MidiSongAsset> midiAsset;
+				midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
+				midiAsset.data.major = true;
+				midiAsset.serialize(ctx);
+				majorAssets.emplace_back(std::move(midiAsset));
+			}
+
+			for (auto &&v : ctx.getProp<ArrayProperty>("MinorMidiSongAssets")->values) {
+				AssetLink<MidiSongAsset> midiAsset;
+				midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
+				midiAsset.data.major = false;
+				midiAsset.serialize(ctx);
+				minorAssets.emplace_back(std::move(midiAsset));
+			}
+		}
+
+		if (!ctx.loading) {
+			ctx.serializeText("Title", ctx.songName);
+
+			for (auto &&a : majorAssets) a.serialize(ctx);
+			for (auto &&a : minorAssets) a.serialize(ctx);
+
+			file.serialize(ctx, "Audio/Songs/" + ctx.shortName + "/" + type.postfix(ctx.shortName) + "/" + "Meta_" + type.postfix(ctx.shortName));
+		}
+	}
+};
+
+struct MainFile {
+	std::string shortName;
+	std::string artistName;
+	std::string songName;
+
+	SongPakEntry file;
+	
+	std::vector<FileLink<CelData>> celData;
+
+	void serialize(SongSerializationCtx &ctx) {
+		ctx.shortName = shortName;
+		ctx.songName = songName;
+
+		file.serialize(ctx, "DLC/Songs/" + ctx.shortName + "/Meta_" + ctx.shortName);
+		ctx.curEntry = file.e;
+
+		ctx.serializeText("Artist", artistName);
+
+		if (ctx.loading) {
+			auto &celArray = *ctx.getProp<ArrayProperty>(file.e, "Cels");
+			for (auto &&v : celArray.values) {
+				FileLink<CelData> fileLink;
+				fileLink.linkVal = std::get<ObjectProperty>(v->v).linkVal;
+				fileLink.serialize(ctx);
+
+				ctx.songName = songName = ctx.getProp<TextProperty>(fileLink.data.file.e, "Title")->strings.back();
+
+				celData.emplace_back(std::move(fileLink));
+			}
+		}
+		else {
+			size_t idx = 0;
+			for (auto &&e : celData) {
+				e.serialize(ctx);
+				++idx;
+			}
+		}
+	}
+};
+
+PakFile songPakFile;
+MainFile mainFile;
+
 
 void display_fuser_assets() {
 	ImGui::Begin("Fuser Assets");
 
-	for (auto &&a : assets) {
-		std::string title = "Asset - " + a.name;
-		if (ImGui::CollapsingHeader(title.c_str())) {
-			ImGui::Indent();
-			display_asset(a.assetData);
-			ImGui::Unindent();
+	ImGui::InputText("Short Name", &mainFile.shortName);
+	ImGui::InputText("Song Name", &mainFile.songName);
+	ImGui::InputText("Artist Name", &mainFile.artistName);
+
+
+	if (ImGui::CollapsingHeader("Raw Files")) {
+		for (auto &&a : songPakFile.entries) {
+			if (auto data = std::get_if<PakFile::PakEntry::PakAssetData>(&a.data)) {
+
+				std::string title = "Asset - " + a.name;
+				if (ImGui::CollapsingHeader(title.c_str())) {
+					ImGui::Indent();
+					display_asset(data->data, &std::get<AssetHeader>(data->pakHeader->data));
+					ImGui::Unindent();
+				}
+			}
 		}
 	}
 
@@ -449,6 +826,46 @@ void window_loop() {
 		}
 #endif
 
+#ifdef DO_SONG_CREATION
+		std::ifstream infile("dllstar_template.pak", std::ios_base::binary);
+		std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+		DataBuffer dataBuf;
+		dataBuf.setupVector(fileData);
+		dataBuf.serialize(songPakFile);
+
+		for (auto &&e : songPakFile.entries) {
+			if (auto data = std::get_if<PakFile::PakEntry::PakAssetData>(&e.data)) {
+				auto pos = e.name.find("DLC/Songs/");
+				if (pos != std::string::npos) {
+					std::string shortName;
+					for (size_t i = 10; i < e.name.size(); ++i) {
+						if (e.name[i] == '/') {
+							break;
+						}
+
+						shortName += e.name[i];
+					}
+
+					//Double check we got the name correct
+					if (e.name == ("DLC/Songs/" + shortName + "/Meta_" + shortName + ".uexp")) {
+						mainFile.shortName = shortName;
+						break;
+					}
+				}
+			}
+		}
+
+		if (mainFile.shortName.empty()) {
+			printf("FATAL ERROR! No short name detected!");
+			__debugbreak();
+		}
+
+		SongSerializationCtx ctx;
+		ctx.loading = true;
+		ctx.pak = &songPakFile;
+		mainFile.serialize(ctx);
+#endif
+
 #if 0
 		if (auto normCat = std::get_if<NormalCategory>(&a.data.catagoryValues[0].value)) {
 			auto createProp = [&](const std::string &name, asset_helper::PropertyValue &&v, std::optional<u32> idx = std::nullopt) {
@@ -586,10 +1003,9 @@ void window_loop() {
 	}
 
 #ifdef DO_ASSET_FILE
-	//for (auto &&a : assets) {
-	//	display_asset(a);
-	//}
-	display_fuser_assets();
+	for (auto &&a : assets) {
+		display_asset(a);
+	}
 #endif
 
 #ifdef DO_SAVE_FILE
@@ -598,6 +1014,52 @@ void window_loop() {
 
 #ifdef DO_PAK_FILE
 	display_savefile(f);
+#endif
+
+#ifdef DO_SONG_CREATION
+	display_fuser_assets();
+
+	if (ImGui::Button("Save")) {
+		SongSerializationCtx ctx;
+		ctx.loading = false;
+		ctx.pak = &songPakFile;
+		mainFile.serialize(ctx);
+
+		std::vector<u8> outData;
+		DataBuffer outBuf;
+		outBuf.setupVector(outData);
+		outBuf.loading = false;
+		songPakFile.serialize(outBuf);
+		outBuf.finalize();
+
+		std::ofstream outPak("out.pak", std::ios_base::binary);
+		outPak.write((char*)outBuf.buffer, outBuf.size);
+
+		{
+			PakSigFile sigFile;
+			sigFile.encrypted_total_hash.resize(512);
+
+			const u32 chunkSize = 64 * 1024;
+			for (size_t start = 0; start < outBuf.size; start += chunkSize) {
+				size_t end = start + chunkSize;
+				if (end > outBuf.size) {
+					end = outBuf.size;
+				}
+
+				sigFile.chunks.emplace_back(CRC::MemCrc32(outBuf.buffer + start, end - start));
+			}
+
+			std::vector<u8> sigOutData;
+			DataBuffer sigOutBuf;
+			sigOutBuf.setupVector(sigOutData);
+			sigOutBuf.loading = false;
+			sigFile.serialize(sigOutBuf);
+			sigOutBuf.finalize();
+
+			std::ofstream outPak("out.sig", std::ios_base::binary);
+			outPak.write((char*)sigOutBuf.buffer, sigOutBuf.size);
+		}
+	}
 #endif
 
 	ImGui::End();

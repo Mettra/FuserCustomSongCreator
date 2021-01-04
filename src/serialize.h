@@ -1,3 +1,4 @@
+#pragma once
 #include "core_types.h"
 
 #include <type_traits>
