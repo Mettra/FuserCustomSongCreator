@@ -307,33 +307,33 @@ struct CelType {
 	};
 	Type value;
 
-	const std::string& getPostfix() {
-		static std::string postfix_beat = "bt";
-		static std::string postfix_bass = "bs";
-		static std::string postfix_lead = "ld";
-		static std::string postfix_loop = "lp";
+	const std::string& getSuffix() {
+		static std::string suffix_beat = "bt";
+		static std::string suffix_bass = "bs";
+		static std::string suffix_lead = "ld";
+		static std::string suffix_loop = "lp";
 
 		std::string typeStr;
 		switch (value) {
 		case Type::Beat:
-			return postfix_beat;
+			return suffix_beat;
 
 		case Type::Bass:
-			return postfix_bass;
+			return suffix_bass;
 
 		case Type::Lead:
-			return postfix_lead;
+			return suffix_lead;
 
 		case Type::Loop:
-			return postfix_loop;
+			return suffix_loop;
 		};
 
 		static std::string null;
 		return null;
 	}
 
-	std::string postfix(const std::string &name) {
-		return getPostfix() + name;
+	std::string suffix(const std::string &name) {
+		return name + getSuffix();
 	}
 
 	const std::string &getEnumValue() {
@@ -361,6 +361,10 @@ struct CelType {
 	}
 };
 
+enum class MidiType {
+	Major,
+	Minor
+};
 
 struct SongSerializationCtx {
 	bool loading = true;
@@ -368,6 +372,28 @@ struct SongSerializationCtx {
 	std::string shortName;
 	std::string songName;
 	CelType curType;
+	MidiType curMidiType;
+	bool isTransition = false;
+
+	std::string folderRoot() {
+		return "Audio/Songs/" + shortName + "/";
+	}
+
+	std::string subCelFolder() {
+		return curType.suffix(shortName) + "/";
+	}
+
+	std::string subCelName() {
+		return curType.suffix(shortName) + (isTransition ? "_trans" : "");
+	}
+
+	std::string midiSuffix() {
+		if (isTransition) {
+			return "";
+		}
+
+		return (curMidiType == MidiType::Major ? "_maj" : "_min");
+	}
 
 	PakFile *pak = nullptr;
 	PakFile::PakEntry *curEntry = nullptr;
@@ -444,18 +470,32 @@ struct SongSerializationCtx {
 	
 };
 
+static const std::string Game_Prefix = "/Game/";
+
 struct SongPakEntry {
 	PakFile::PakEntry *e = nullptr;
 	std::string path;
 
-	void serialize(SongSerializationCtx &ctx, const std::string &path) {
+	//@REVISIT: This is pretty janky, since exceptions need to be manually set. 
+	//But I don't know if there's a better way to find this through the object structure.
+	i32 thisObjectPath = 0;
+
+	void serialize(SongSerializationCtx &ctx, const std::string &parentPath, const std::string &fileName) {
 		if (ctx.loading) {
-			e = ctx.getFile(path);
+			e = ctx.getFile(parentPath + fileName);
 		}
 		else {
-			this->path = path;
+			auto &&header = e->getData().pakHeader->getHeader();
+
+			path = parentPath + fileName;
 			e->name = path + ".uexp";
 			std::get<PakFile::PakEntry::PakAssetData>(e->data).pakHeader->name = path + ".uasset";
+
+			header.names[header.catagories[0].objectName].name = fileName;
+
+			if (thisObjectPath != -1) {
+				header.names[thisObjectPath].name = Game_Prefix + parentPath + fileName;
+			}
 		}
 	}
 };
@@ -466,15 +506,13 @@ struct FileLink {
 	T data;
 
 	void serialize(SongSerializationCtx &ctx) {
-		static const std::string prefix = "/Game/";
-
 		auto prevFile = ctx.curEntry;
 		auto &&header = ctx.getHeader();
 
 		if (ctx.loading) {
 			
 			auto &&linkedFile = header.getLinkRef(header.getLinkRef(linkVal).link);
-			data.file.e = ctx.getFile(header.getHeaderRef(linkedFile.property).substr(prefix.size()) + ".uexp");
+			data.file.e = ctx.getFile(header.getHeaderRef(linkedFile.property).substr(Game_Prefix.size()) + ".uexp");
 		}
 
 		if (data.file.e == nullptr) return;
@@ -486,7 +524,7 @@ struct FileLink {
 			ctx.getHeader().names[ctx.getHeader().getLinkRef(linkVal).property].name = fs::path(data.file.path).stem().string();
 
 			auto &&linkedFile = header.getLinkRef(header.getLinkRef(linkVal).link);
-			ctx.getHeader().names[linkedFile.property].name = prefix + data.file.path;
+			ctx.getHeader().names[linkedFile.property].name = Game_Prefix + data.file.path;
 		}
 	}
 };
@@ -495,9 +533,11 @@ template<typename T>
 struct AssetLink {
 	T data;
 	StringRef32 ref;
+	bool hasExt = false;
+	std::optional<StringRef32> fullRef;
+	std::optional<StringRef32> shortRef;
 
 	void serialize(SongSerializationCtx &ctx) {
-		static const std::string prefix = "/Game/";
 		auto prevFile = ctx.curEntry;
 		auto &&header = ctx.getHeader();
 
@@ -505,8 +545,16 @@ struct AssetLink {
 			std::string fullPath = ref.getString(header);
 			auto pos = fullPath.rfind('.');
 			std::string assetPath = fullPath.substr(0, pos);
+			hasExt = pos != std::string::npos;
 			//std::string assetName = fullPath.substr(pos + 1);
-			data.file.e = ctx.getFile(assetPath.substr(prefix.size()) + ".uexp");
+			data.file.e = ctx.getFile(assetPath.substr(Game_Prefix.size()) + ".uexp");
+
+			for (auto &&l : header.links) {
+				if (l.link != 0 && header.names[header.getLinkRef(l.link).property].name == assetPath) {
+					shortRef = StringRef32();
+					shortRef->ref = l.property;
+				}
+			}
 		}
 
 		if (data.file.e == nullptr) return;
@@ -518,7 +566,17 @@ struct AssetLink {
 			auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(data.file.e->data);
 			auto &&subHeader = std::get<AssetHeader>(assetData.pakHeader->data);
 			
-			header.names[ref.ref].name = prefix + data.file.path + "." + std::get<HmxAssetFile>(assetData.data.catagoryValues[0].value).assetName.getString(subHeader);
+			std::string assetPath = Game_Prefix + data.file.path;
+			header.names[ref.ref - 1].name = assetPath;
+			if (hasExt) {
+				assetPath += "." + subHeader.getHeaderRef(subHeader.catagories[0].objectName);
+			}
+			header.names[ref.ref].name = assetPath;
+
+			if (shortRef.has_value()) {
+				std::string shortName = assetPath.substr(assetPath.find_last_of('/') + 1);
+				header.names[shortRef->ref].name = shortName;
+			}
 		}
 	}
 };
@@ -526,14 +584,79 @@ struct AssetLink {
 
 //////////
 
-struct MidiSongAsset {
+struct MidiFileAsset {
 	SongPakEntry file;
-	bool major = false;
 
 	void serialize(SongSerializationCtx &ctx) {
 
 		if (!ctx.loading) {
-			file.serialize(ctx, "Audio/Songs/" + ctx.shortName + "/" + ctx.curType.postfix(ctx.shortName) + "/" + ctx.curType.postfix(ctx.shortName) + "_midisong_" + (major ? "maj" : "min"));
+			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder() + "midi/", ctx.subCelName() + "_mid" + ctx.midiSuffix());
+		}
+	}
+};
+
+struct FusionFileAsset {
+	SongPakEntry file;
+
+	void serialize(SongSerializationCtx &ctx) {
+
+		if (!ctx.loading) {
+			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder() + "fusion/", ctx.subCelName() + "_fusion");
+		}
+	}
+};
+
+struct MidiSongAsset {
+	SongPakEntry file;
+	bool major = false;
+
+	AssetLink<MidiFileAsset> midiFile;
+	AssetLink<FusionFileAsset> fusionFile;
+
+	void serialize(SongSerializationCtx &ctx) {
+		auto &&hmxAsset = std::get<HmxAssetFile>(file.e->getData().data.catagoryValues[0].value);
+		auto &&midiMusic = std::get<HmxAudio::PackageFile::MidiMusicResource>(hmxAsset.audio.audioFiles[0].resourceHeader);
+
+		if (ctx.loading) {
+			auto fusionPath = midiMusic.patch_engine_path.str;
+			fusionPath = fusionPath.substr(0, fusionPath.find_first_of('.'));
+
+			auto midiPath = midiMusic.mid_engine_path.str;
+			midiPath = midiPath.substr(0, midiPath.find_first_of('.'));
+
+			auto &&header = file.e->getData().pakHeader->getHeader();
+			for (auto &&l : header.links) {
+				if (header.getHeaderRef(l.property) == fusionPath) {
+					fusionFile.ref.ref = l.property;
+				}
+
+				if (header.getHeaderRef(l.property) == midiPath) {
+					midiFile.ref.ref = l.property;
+				}
+			}
+
+		}
+
+		ctx.curMidiType = major ? MidiType::Major : MidiType::Minor;
+		midiFile.serialize(ctx);
+		fusionFile.serialize(ctx);
+
+		if (!ctx.loading) {
+			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder(), ctx.subCelName() + "_midisong" + (ctx.curType.value == CelType::Type::Beat ? "" : (ctx.curMidiType == MidiType::Major ? "_maj" : "_min")));
+
+			{
+				auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(midiFile.data.file.e->data);
+				auto &&subHeader = std::get<AssetHeader>(assetData.pakHeader->data);
+
+				midiMusic.midisong_engine_path.str = midiFile.ref.getString(subHeader) + ".midi";
+			}
+
+			{
+				auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(fusionFile.data.file.e->data);
+				auto &&subHeader = std::get<AssetHeader>(assetData.pakHeader->data);
+
+				midiMusic.midisong_engine_path.str = fusionFile.ref.getString(subHeader) + ".fusion";
+			}
 		}
 	}
 };
@@ -542,16 +665,43 @@ struct SongTransition {
 	SongPakEntry file;
 
 	std::string shortName;
+	std::vector<AssetLink<MidiSongAsset>> majorAssets;
+	std::vector<AssetLink<MidiSongAsset>> minorAssets;
 
 	void serialize(SongSerializationCtx &ctx) {
+		ctx.isTransition = true;
 
-		shortName = ctx.curType.postfix(ctx.shortName) + "_trans";
+		shortName = ctx.curType.suffix(ctx.shortName) + "_trans";
 		ctx.serializeName("ShortName", shortName);
+
+		if (ctx.loading) {
+			for (auto &&v : ctx.getProp<ArrayProperty>("MajorMidiSongAssets")->values) {
+				AssetLink<MidiSongAsset> midiAsset;
+				midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
+				midiAsset.data.major = true;
+				midiAsset.serialize(ctx);
+				majorAssets.emplace_back(std::move(midiAsset));
+			}
+
+			for (auto &&v : ctx.getProp<ArrayProperty>("MinorMidiSongAssets")->values) {
+				AssetLink<MidiSongAsset> midiAsset;
+				midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
+				midiAsset.data.major = false;
+				midiAsset.serialize(ctx);
+				minorAssets.emplace_back(std::move(midiAsset));
+			}
+		}
 
 		if (!ctx.loading) {
 			ctx.serializeText("Title", ctx.songName);
-			file.serialize(ctx, "Audio/Songs/" + ctx.shortName + "/" + ctx.curType.postfix(ctx.shortName) + "/" + "Meta_" + ctx.curType.postfix(ctx.shortName) + "_trans");
+
+			for (auto &&a : majorAssets) a.serialize(ctx);
+			for (auto &&a : minorAssets) a.serialize(ctx);
+
+			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder(), "Meta_" + ctx.subCelName());
 		}
+
+		ctx.isTransition = false;
 	}
 };
 
@@ -588,9 +738,17 @@ struct CelData {
 
 		
 
-		shortName = ctx.shortName + type.getPostfix();
+		shortName = ctx.shortName + type.getSuffix();
 		ctx.serializeName("ShortName", shortName);
 		ctx.curType = type;
+
+		//@REVISIT
+		file.thisObjectPath = 4;
+		songTransitionFile.data.file.thisObjectPath = 4;
+		if (type.value == CelType::Type::Beat) {
+			file.thisObjectPath = 2;
+			songTransitionFile.data.file.thisObjectPath = 2;
+		}
 
 		songTransitionFile.linkVal = ctx.getProp<ObjectProperty>("SongTransitionCelData")->linkVal;
 		songTransitionFile.serialize(ctx);
@@ -619,7 +777,7 @@ struct CelData {
 			for (auto &&a : majorAssets) a.serialize(ctx);
 			for (auto &&a : minorAssets) a.serialize(ctx);
 
-			file.serialize(ctx, "Audio/Songs/" + ctx.shortName + "/" + type.postfix(ctx.shortName) + "/" + "Meta_" + type.postfix(ctx.shortName));
+			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder(), "Meta_" + type.suffix(ctx.shortName));
 		}
 	}
 };
@@ -637,7 +795,10 @@ struct MainFile {
 		ctx.shortName = shortName;
 		ctx.songName = songName;
 
-		file.serialize(ctx, "DLC/Songs/" + ctx.shortName + "/Meta_" + ctx.shortName);
+		//@REVISIT
+		file.thisObjectPath = 4;
+
+		file.serialize(ctx, "DLC/Songs/" + ctx.shortName + "/", "Meta_" + ctx.shortName);
 		ctx.curEntry = file.e;
 
 		ctx.serializeText("Artist", artistName);
@@ -655,6 +816,8 @@ struct MainFile {
 			}
 		}
 		else {
+			ctx.serializeName("SongShortName", shortName);
+
 			size_t idx = 0;
 			for (auto &&e : celData) {
 				e.serialize(ctx);
@@ -864,6 +1027,34 @@ void window_loop() {
 		ctx.loading = true;
 		ctx.pak = &songPakFile;
 		mainFile.serialize(ctx);
+
+		mainFile.shortName = "bllstar";
+
+		ctx.loading = false;
+		mainFile.serialize(ctx);
+
+		//for (auto &&e : songPakFile.entries) {
+		//	if (auto header = std::get_if<AssetHeader>(&e.data)) {
+		//		for (auto &&n : header->names) {
+		//			if (n.name.find("dllstar") != std::string::npos) {
+		//				printf("Header %s has a dllstar!\n", e.name.c_str());
+		//				break;
+		//			}
+		//		}
+		//	}
+		//}
+
+		std::vector<u8> outData;
+		DataBuffer outBuf;
+		outBuf.setupVector(outData);
+		outBuf.loading = false;
+		songPakFile.serialize(outBuf);
+		outBuf.finalize();
+
+		std::ofstream outPak("out.pak", std::ios_base::binary);
+		outPak.write((char*)outBuf.buffer, outBuf.size);
+
+		test_buffer(dataBuf, outBuf);
 #endif
 
 #if 0

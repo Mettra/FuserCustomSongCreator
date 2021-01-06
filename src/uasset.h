@@ -904,7 +904,7 @@ struct HmxAudio {
 
 		struct MidiMusicResource {
 			i32 unk;
-			std::string midisong_name;
+			hmx_string midisong_name;
 			hmx_array root;
 			u8 unk2;
 			hmx_string midisong_engine_path;
@@ -1367,6 +1367,18 @@ struct PakFile {
 		};
 
 		std::variant<AssetHeader, PakAssetData> data;
+
+		AssetHeader &getHeader() {
+			if (auto pakData = std::get_if<PakAssetData>(&data)) {
+				return pakData->pakHeader->getHeader();
+			}
+
+			return std::get<AssetHeader>(data);
+		}
+
+		PakAssetData &getData() {
+			return std::get<PakAssetData>(data);
+		}
 		
 		void serialize(DataBuffer &buffer) {
 			buffer.serialize(name);
