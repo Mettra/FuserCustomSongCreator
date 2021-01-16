@@ -9,6 +9,28 @@
 #include <filesystem>
 namespace fs = std::filesystem;
 
+void replace(u8* data, size_t size, const std::string &find, const std::string &replace) {
+	if (find.size() != replace.size()) {
+		printf("NOT THE SAME SIZE!\n");
+		__debugbreak();
+		return;
+	}
+
+	for (size_t i = 0; i < size; ++i) {
+		bool found = true;
+		for (size_t j = 0; j < find.size(); ++j) {
+			if ((*(data + i + j) != *(find.data() + j))) {
+				found = false;
+				break;
+			}
+		}
+
+		if (found) {
+			memcpy(data + i, replace.data(), replace.size());
+		}
+	}
+}
+
 struct ImSubregion {
 	ImSubregion(void* p) {
 		ImGui::PushID(p);
@@ -25,6 +47,49 @@ struct ImSubregion {
 		ImGui::Unindent();
 	}
 };
+
+struct Logger {
+	size_t _indent = 0;
+
+	void indent() {
+		for (size_t i = 0; i < _indent; ++i) {
+			printf("  ");
+		}
+	}
+
+	void print(const char *format, ...) {
+		indent();
+
+		va_list argptr;
+		va_start(argptr, format);
+		vfprintf(stderr, format, argptr);
+		va_end(argptr);
+
+		printf("\n");
+	}
+
+	void push(const char *name) {
+		print(name);
+		_indent += 1;
+	}
+
+	void pop() {
+		_indent -= 1;
+	}
+};
+
+Logger gLog;
+
+struct LogSection {
+	LogSection(const char *name) {
+		gLog.push(name);
+	}
+
+	~LogSection() {
+		gLog.pop();
+	}
+};
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -285,6 +350,7 @@ lp = inst
 //#define DO_ASSET_FILE
 //#define DO_PAK_FILE
 #define DO_SONG_CREATION
+#define ONE_SHOT
 SaveFile f;
 
 PakFile pak;
@@ -475,6 +541,7 @@ static const std::string Game_Prefix = "/Game/";
 struct SongPakEntry {
 	PakFile::PakEntry *e = nullptr;
 	std::string path;
+	std::string name;
 
 	//@REVISIT: This is pretty janky, since exceptions need to be manually set. 
 	//But I don't know if there's a better way to find this through the object structure.
@@ -488,6 +555,8 @@ struct SongPakEntry {
 			auto &&header = e->getData().pakHeader->getHeader();
 
 			path = parentPath + fileName;
+			name = fileName;
+
 			e->name = path + ".uexp";
 			std::get<PakFile::PakEntry::PakAssetData>(e->data).pakHeader->name = path + ".uasset";
 
@@ -508,6 +577,7 @@ struct FileLink {
 	void serialize(SongSerializationCtx &ctx) {
 		auto prevFile = ctx.curEntry;
 		auto &&header = ctx.getHeader();
+		LogSection s(header.getHeaderRef(header.getLinkRef(header.getLinkRef(linkVal).link).property).c_str());
 
 		if (ctx.loading) {
 			
@@ -533,6 +603,7 @@ template<typename T>
 struct AssetLink {
 	T data;
 	StringRef32 ref;
+	std::optional<StringRef32> refWithoutExtension;
 	bool hasExt = false;
 	std::optional<StringRef32> fullRef;
 	std::optional<StringRef32> shortRef;
@@ -540,12 +611,23 @@ struct AssetLink {
 	void serialize(SongSerializationCtx &ctx) {
 		auto prevFile = ctx.curEntry;
 		auto &&header = ctx.getHeader();
+		LogSection s(header.getHeaderRef(ref.ref).c_str());
 
 		if (ctx.loading) {
 			std::string fullPath = ref.getString(header);
 			auto pos = fullPath.rfind('.');
 			std::string assetPath = fullPath.substr(0, pos);
 			hasExt = pos != std::string::npos;
+			if (hasExt) {
+				size_t idx = 0;
+				for (auto &&s : header.names) {
+					if (s.name == assetPath) {
+						refWithoutExtension = StringRef32();
+						refWithoutExtension->ref = idx;
+					}
+					++idx;
+				}
+			}
 			//std::string assetName = fullPath.substr(pos + 1);
 			data.file.e = ctx.getFile(assetPath.substr(Game_Prefix.size()) + ".uexp");
 
@@ -567,7 +649,12 @@ struct AssetLink {
 			auto &&subHeader = std::get<AssetHeader>(assetData.pakHeader->data);
 			
 			std::string assetPath = Game_Prefix + data.file.path;
-			header.names[ref.ref - 1].name = assetPath;
+			
+			//@TODO: Another special case for beats
+			if (refWithoutExtension) {
+				header.names[refWithoutExtension->ref].name = assetPath;
+			}
+			
 			if (hasExt) {
 				assetPath += "." + subHeader.getHeaderRef(subHeader.catagories[0].objectName);
 			}
@@ -591,6 +678,10 @@ struct MidiFileAsset {
 
 		if (!ctx.loading) {
 			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder() + "midi/", ctx.subCelName() + "_mid" + ctx.midiSuffix());
+
+			auto &&hmxAsset = std::get<HmxAssetFile>(file.e->getData().data.catagoryValues[0].value);
+			hmxAsset.originalFilename = file.name;
+			hmxAsset.audio.audioFiles[0].fileName = Game_Prefix + file.path + ".mid";
 		}
 	}
 };
@@ -601,7 +692,37 @@ struct FusionFileAsset {
 	void serialize(SongSerializationCtx &ctx) {
 
 		if (!ctx.loading) {
-			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder() + "fusion/", ctx.subCelName() + "_fusion");
+			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder() + "patches/", ctx.subCelName() + "_fusion");
+
+			auto &&asset = std::get<HmxAssetFile>(file.e->getData().data.catagoryValues[0].value);
+			asset.originalFilename = ctx.subCelName() + "_fusion";
+
+			std::vector<HmxAudio::PackageFile*> moggFiles;
+			HmxAudio::PackageFile *fusionFile;
+			
+			for (auto &&file : asset.audio.audioFiles) {
+				if (file.fileType == "FusionPatchResource") {
+					fusionFile = &file;
+				}
+				else if (file.fileType == "MoggSampleResource") {
+					moggFiles.emplace_back(&file);
+				}
+			}
+
+			for (auto &&f : moggFiles) {
+				f->fileName = "C:/" + ctx.subCelName() + ctx.midiSuffix() + ".mogg"; //Yes, moggs require a drive (C:/) before it otherwise they won't load.
+			}
+
+			fusionFile->fileName = Game_Prefix + file.path + ".fusion";
+			auto &&fusion = std::get< HmxAudio::PackageFile::FusionFileResource>(fusionFile->resourceHeader);
+			auto map = fusion.nodes.getNode("keymap");
+
+			size_t idx = 0;
+			for (auto c : map.children) {
+				auto nodes = std::get<hmx_fusion_nodes*>(c.value);
+				nodes->getString("sample_path") = moggFiles[idx % moggFiles.size()]->fileName;
+				++idx;
+			}
 		}
 	}
 };
@@ -642,21 +763,18 @@ struct MidiSongAsset {
 		fusionFile.serialize(ctx);
 
 		if (!ctx.loading) {
-			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder(), ctx.subCelName() + "_midisong" + (ctx.curType.value == CelType::Type::Beat ? "" : (ctx.curMidiType == MidiType::Major ? "_maj" : "_min")));
+			std::string fileName = ctx.subCelName() + "_midisong" + (ctx.curType.value == CelType::Type::Beat ? "" : (ctx.curMidiType == MidiType::Major ? "_maj" : "_min"));
+			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder(), fileName);
 
-			{
-				auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(midiFile.data.file.e->data);
-				auto &&subHeader = std::get<AssetHeader>(assetData.pakHeader->data);
+			hmxAsset.originalFilename = fileName;
+			hmxAsset.audio.audioFiles[0].fileName = Game_Prefix + file.path + ".midisong";
 
-				midiMusic.midisong_engine_path.str = midiFile.ref.getString(subHeader) + ".midi";
-			}
-
-			{
-				auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(fusionFile.data.file.e->data);
-				auto &&subHeader = std::get<AssetHeader>(assetData.pakHeader->data);
-
-				midiMusic.midisong_engine_path.str = fusionFile.ref.getString(subHeader) + ".fusion";
-			}
+			midiMusic.mid_engine_path.str = Game_Prefix + midiFile.data.file.path + ".mid";
+			midiMusic.patch_engine_path.str = Game_Prefix + fusionFile.data.file.path + ".fusion";
+			midiMusic.midisong_engine_path.str = Game_Prefix + file.path + ".midisong";
+			midiMusic.midisong_name.str = fileName + ".midisong";
+			midiMusic.root.children[0].getArray().children[1].getString().str = "midi/" + midiFile.data.file.name + ".mid";
+			midiMusic.root.children[1].getArray().children[1].getArray().children[2].getArray().children[1].getString().str = "patches/" + fusionFile.data.file.name + ".fusion";
 		}
 	}
 };
@@ -683,12 +801,14 @@ struct SongTransition {
 				majorAssets.emplace_back(std::move(midiAsset));
 			}
 
-			for (auto &&v : ctx.getProp<ArrayProperty>("MinorMidiSongAssets")->values) {
-				AssetLink<MidiSongAsset> midiAsset;
-				midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
-				midiAsset.data.major = false;
-				midiAsset.serialize(ctx);
-				minorAssets.emplace_back(std::move(midiAsset));
+			if (ctx.curType.value != CelType::Type::Beat) {
+				for (auto &&v : ctx.getProp<ArrayProperty>("MinorMidiSongAssets")->values) {
+					AssetLink<MidiSongAsset> midiAsset;
+					midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
+					midiAsset.data.major = false;
+					midiAsset.serialize(ctx);
+					minorAssets.emplace_back(std::move(midiAsset));
+				}
 			}
 		}
 
@@ -762,22 +882,38 @@ struct CelData {
 				majorAssets.emplace_back(std::move(midiAsset));
 			}
 
-			for (auto &&v : ctx.getProp<ArrayProperty>("MinorMidiSongAssets")->values) {
-				AssetLink<MidiSongAsset> midiAsset;
-				midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
-				midiAsset.data.major = false;
-				midiAsset.serialize(ctx);
-				minorAssets.emplace_back(std::move(midiAsset));
+			//@TODO: Another special case for beats
+			if (ctx.curType.value != CelType::Type::Beat) {
+				for (auto &&v : ctx.getProp<ArrayProperty>("MinorMidiSongAssets")->values) {
+					AssetLink<MidiSongAsset> midiAsset;
+					midiAsset.ref = std::get<SoftObjectProperty>(v->v).name;
+					midiAsset.data.major = false;
+					midiAsset.serialize(ctx);
+					minorAssets.emplace_back(std::move(midiAsset));
+				}
 			}
 		}
 
 		if (!ctx.loading) {
 			ctx.serializeText("Title", ctx.songName);
 
-			for (auto &&a : majorAssets) a.serialize(ctx);
-			for (auto &&a : minorAssets) a.serialize(ctx);
+			for (auto &&a : majorAssets) {
+				a.serialize(ctx);
+			}
+
+			for (auto &&a : minorAssets) {
+				a.serialize(ctx);
+			}
 
 			file.serialize(ctx, ctx.folderRoot() + ctx.subCelFolder(), "Meta_" + type.suffix(ctx.shortName));
+		}
+
+
+		for (auto &&a : majorAssets) {
+			gLog.print("Major - %s", ctx.getHeader().names[a.ref.ref].name.c_str());
+		}
+		for (auto &&a : minorAssets) {
+			gLog.print("Minor - %s", ctx.getHeader().names[a.ref.ref].name.c_str());
 		}
 	}
 };
@@ -856,7 +992,7 @@ void display_fuser_assets() {
 	ImGui::End();
 }
 
-void test_buffer(const DataBuffer &in_buffer, const DataBuffer &out_buffer) {
+bool test_buffer(const DataBuffer &in_buffer, const DataBuffer &out_buffer) {
 	if (in_buffer.size != out_buffer.size || memcmp(in_buffer.buffer, out_buffer.buffer, in_buffer.size) != 0) {
 		printf("NOT THE SAME!\n");
 		if (in_buffer.size != out_buffer.size) {
@@ -872,16 +1008,22 @@ void test_buffer(const DataBuffer &in_buffer, const DataBuffer &out_buffer) {
 				}
 			}
 		}
+		return false;
 	}
 	else {
 		printf("IS SAME!\n");
+		return true;
 	}
 }
 
 void window_loop() {
 	ImGui::Begin("Fuser Custom Song");
 
-	if (ImGui::Button("Load")) {
+	auto press = ImGui::Button("Load");
+#ifdef ONE_SHOT
+	press = true;
+#endif
+	if (press) {
 
 #ifdef DO_ASSET_FILE
 
@@ -1023,15 +1165,25 @@ void window_loop() {
 			__debugbreak();
 		}
 
+		printf("LOADING:\n\n");
+
 		SongSerializationCtx ctx;
 		ctx.loading = true;
 		ctx.pak = &songPakFile;
 		mainFile.serialize(ctx);
 
-		mainFile.shortName = "bllstar";
+		mainFile.shortName = "completely_different_short_name";
+		mainFile.songName = "My Custom Song (Not All Star)";
+		mainFile.artistName = "Mettra";
+
+
+#if 0
+		printf("\n\nSaving:\n\n");
 
 		ctx.loading = false;
 		mainFile.serialize(ctx);
+
+		printf("\n\n");
 
 		//for (auto &&e : songPakFile.entries) {
 		//	if (auto header = std::get_if<AssetHeader>(&e.data)) {
@@ -1055,6 +1207,8 @@ void window_loop() {
 		outPak.write((char*)outBuf.buffer, outBuf.size);
 
 		test_buffer(dataBuf, outBuf);
+#endif
+
 #endif
 
 #if 0
@@ -1210,7 +1364,13 @@ void window_loop() {
 #ifdef DO_SONG_CREATION
 	display_fuser_assets();
 
-	if (ImGui::Button("Save")) {
+	auto save_press = ImGui::Button("Save");
+
+#ifdef ONE_SHOT
+	save_press = true;
+#endif
+
+	if (save_press) {
 		SongSerializationCtx ctx;
 		ctx.loading = false;
 		ctx.pak = &songPakFile;
@@ -1223,7 +1383,13 @@ void window_loop() {
 		songPakFile.serialize(outBuf);
 		outBuf.finalize();
 
-		std::ofstream outPak("out.pak", std::ios_base::binary);
+		DataBuffer testBuf;
+		testBuf.setupVector(outData);
+		testBuf.serialize(songPakFile);
+
+		std::string basePath = "D:/Program Files (x86)/Steam/steamapps/common/Fuser/Fuser/Content/Paks/custom_songs/";
+
+		std::ofstream outPak(basePath + mainFile.shortName + "_P.pak", std::ios_base::binary);
 		outPak.write((char*)outBuf.buffer, outBuf.size);
 
 		{
@@ -1247,11 +1413,16 @@ void window_loop() {
 			sigFile.serialize(sigOutBuf);
 			sigOutBuf.finalize();
 
-			std::ofstream outPak("out.sig", std::ios_base::binary);
+			std::ofstream outPak(basePath + mainFile.shortName + "_P.sig", std::ios_base::binary);
 			outPak.write((char*)sigOutBuf.buffer, sigOutBuf.size);
 		}
 	}
 #endif
 
 	ImGui::End();
+
+
+#ifdef ONE_SHOT
+	exit(0);
+#endif
 }

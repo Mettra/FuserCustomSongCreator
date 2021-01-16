@@ -872,6 +872,8 @@ struct DataTableCategory {
 	}
 };
 
+bool test_buffer(const DataBuffer &in_buffer, const DataBuffer &out_buffer);
+
 struct HmxAudio {
 	struct PackageFile {
 		i32 unk0;
@@ -928,7 +930,15 @@ struct HmxAudio {
 			}
 		};
 
-		std::variant<std::monostate, MoggSampleResourceHeader, MidiMusicResource> resourceHeader;
+		struct FusionFileResource {
+			hmx_fusion_nodes nodes;
+
+			void serialize(DataBuffer &buffer) {
+				
+			}
+		};
+
+		std::variant<std::monostate, MoggSampleResourceHeader, MidiMusicResource, FusionFileResource> resourceHeader;
 		std::vector<u8> fileData;
 
 
@@ -951,6 +961,12 @@ struct HmxAudio {
 					buffer.serialize(resource);
 					resourceHeader = std::move(resource);
 				}
+				else if (fileType == "FusionPatchResource") {
+					FusionFileResource resource;
+					buffer.serializeWithSize(fileData, totalSize);
+					resource.nodes = hmx_fusion_parser::parseData(fileData);
+					resourceHeader = std::move(resource);
+				}
 				else {
 					buffer.serializeWithSize(fileData, totalSize);
 				}
@@ -968,6 +984,14 @@ struct HmxAudio {
 						buffer.serialize(value);
 					}
 				}, resourceHeader);
+
+				if (auto fusionResource = std::get_if<FusionFileResource>(&resourceHeader)) {
+					auto str = hmx_fusion_parser::outputData(fusionResource->nodes);
+
+					fileData.clear();
+					fileData.resize(str.size());
+					std::memcpy(fileData.data(), str.data(), fileData.size());
+				}
 
 				buffer.serializeWithSize(fileData, fileData.size());
 

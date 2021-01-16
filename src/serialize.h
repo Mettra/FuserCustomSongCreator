@@ -42,22 +42,9 @@ struct DataBuffer {
 	}
 
 	void watch(std::function<void()> fn) {
-		if (derivedBuffer.has_value()) {
-			derivedBuffer->base->watch_ = true;
-		}
-		else {
-			watch_ = true;
-
-		}
-
+		watch_ = true;
 		fn();
-
-		if (derivedBuffer.has_value()) {
-			derivedBuffer->base->watch_ = false;
-		}
-		else {
-			watch_ = false;
-		}
+		watch_ = false;
 	}
 
 	void finalize() {
@@ -76,9 +63,11 @@ struct DataBuffer {
 		dB.base = this;
 		dB.offset = pos;
 
-		DataBuffer newBuffer = *this;
+		DataBuffer newBuffer;
 		newBuffer.buffer = nullptr;
 		newBuffer.pos = 0;
+		newBuffer.ctx_ = ctx_;
+		newBuffer.loading = loading;
 		if (loading) {
 			newBuffer.size = size - pos;
 		}
@@ -109,9 +98,14 @@ struct DataBuffer {
 	void serialize(u8 *data, size_t data_size) {
 		if (derivedBuffer.has_value()) {
 			size_t prevPos = derivedBuffer->base->pos;
+			bool prevWatch = derivedBuffer->base->watch_;
 			
 			derivedBuffer->base->pos = pos + derivedBuffer->offset;
+			derivedBuffer->base->watch_ = watch_;
+			
 			derivedBuffer->base->serialize(data, data_size);
+
+			derivedBuffer->base->watch_ = prevWatch;
 			derivedBuffer->base->pos = prevPos;
 
 			pos += data_size;
@@ -131,12 +125,14 @@ struct DataBuffer {
 			return;
 		}
 
-		//constexpr u32 dbgpos = 4960;
+#ifdef _DEBUG
+		//constexpr u32 dbgpos = 51777;
 		//if (!loading) {
 		//	if (pos <= dbgpos && pos + data_size > dbgpos) {
 		//		__debugbreak();
 		//	}
 		//}
+#endif
 
 		if (loading) {
 			memcpy(data, buffer + pos, data_size);

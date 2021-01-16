@@ -4,6 +4,52 @@
 #include "serialize.h"
 
 struct hmx_node;
+struct hmx_fusion_nodes;
+
+struct hmx_vec {
+	float x;
+	float y;
+};
+
+struct hmx_fusion_node {
+	~hmx_fusion_node();
+	std::string key;
+	std::variant<int, float, std::string, hmx_fusion_nodes*, hmx_vec> value;
+};
+
+struct hmx_fusion_nodes {
+	std::vector<hmx_fusion_node> children;
+
+
+	hmx_fusion_node* getChild(const std::string &key) {
+		for (auto &&c : children) {
+			if (c.key == key) {
+				return &c;
+			}
+		}
+
+		return nullptr;
+	}
+
+	int& getInt(const std::string &key) {
+		return std::get<int>(getChild(key)->value);
+	}
+
+	std::string& getString(const std::string &key) {
+		return std::get<std::string>(getChild(key)->value);
+	}
+
+	hmx_fusion_nodes& getNode(const std::string &key) {
+		return *std::get<hmx_fusion_nodes*>(getChild(key)->value);
+	}
+
+};
+
+struct hmx_fusion_parser {
+	static hmx_fusion_nodes parseData(const std::vector<u8> &fusion_file);
+	static std::string outputData(const hmx_fusion_nodes &nodes);
+};
+
 
 struct hmx_array {
 	i32 nodeId;
@@ -55,6 +101,14 @@ struct hmx_node {
 	u32 type;
 
 	std::variant<i32, float, hmx_string, hmx_array, hmx_subtree_node> value;
+
+	hmx_array& getArray() {
+		return std::get<hmx_array>(value);
+	}
+
+	hmx_string& getString() {
+		return std::get<hmx_string>(value);
+	}
 
 	void serialize(DataBuffer &buffer) {
 		buffer.serialize(type);
