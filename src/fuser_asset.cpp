@@ -9,6 +9,11 @@
 #include <filesystem>
 namespace fs = std::filesystem;
 
+#include "custom_song_pak_template.h"
+
+#define NOMINMAX
+#include <Windows.h>
+
 void replace(u8* data, size_t size, const std::string &find, const std::string &replace) {
 	if (find.size() != replace.size()) {
 		printf("NOT THE SAME SIZE!\n");
@@ -350,7 +355,7 @@ lp = inst
 //#define DO_ASSET_FILE
 //#define DO_PAK_FILE
 #define DO_SONG_CREATION
-#define ONE_SHOT
+//#define ONE_SHOT
 SaveFile f;
 
 PakFile pak;
@@ -966,6 +971,31 @@ struct MainFile {
 PakFile songPakFile;
 MainFile mainFile;
 
+std::optional<std::string> OpenFile(LPCSTR filter) {
+	CHAR szFileName[MAX_PATH];
+
+	// open a file name
+	OPENFILENAME ofn;
+	ZeroMemory(&szFileName, sizeof(szFileName));
+	ZeroMemory(&ofn, sizeof(ofn));
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = NULL;
+	ofn.lpstrFile = szFileName;
+	ofn.lpstrFile[0] = '\0';
+	ofn.nMaxFile = sizeof(szFileName);
+	ofn.lpstrFilter = filter;
+	ofn.nFilterIndex = 1;
+	ofn.lpstrFileTitle = NULL;
+	ofn.nMaxFileTitle = 0;
+	ofn.lpstrInitialDir = NULL;
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+	if (GetOpenFileNameA(&ofn)) {
+		return std::string(ofn.lpstrFile);
+	}
+
+	return std::nullopt;
+}
+
 
 void display_fuser_assets() {
 	ImGui::Begin("Fuser Assets");
@@ -974,6 +1004,65 @@ void display_fuser_assets() {
 	ImGui::InputText("Song Name", &mainFile.songName);
 	ImGui::InputText("Artist Name", &mainFile.artistName);
 
+	if (ImGui::Button("Replace Beat Fusion")) {
+		auto beatFusion = OpenFile("Any File (*.*)\0*.*\0");
+		if (beatFusion) {
+			std::ifstream infile(*beatFusion, std::ios_base::binary);
+			std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+
+			for (auto &&c : mainFile.celData) {
+				if (c.data.type.value == CelType::Type::Beat) {
+					auto &&fusionFile = c.data.majorAssets[0].data.fusionFile.data;
+					auto &&asset = std::get<HmxAssetFile>(fusionFile.file.e->getData().data.catagoryValues[0].value);
+
+					for (auto &&a : asset.audio.audioFiles) {
+						if (a.fileType == "FusionPatchResource") {
+							auto &&fusionResource = std::get<HmxAudio::PackageFile::FusionFileResource>(a.resourceHeader);
+							fusionResource.nodes = hmx_fusion_parser::parseData(fileData);
+						}
+					}
+					
+				}
+			}
+		}
+	}
+
+	if (ImGui::Button("Replace Beat Mogg")) {
+		auto beatFusion = OpenFile("Encrypted Mogg (*.mogg)\0*.mogg\0");
+		if (beatFusion) {
+			std::ifstream infile(*beatFusion, std::ios_base::binary);
+			std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+
+			for (auto &&c : mainFile.celData) {
+				if (c.data.type.value == CelType::Type::Beat) {
+					auto &&fusionFile = c.data.majorAssets[0].data.fusionFile.data;
+					auto &&asset = std::get<HmxAssetFile>(fusionFile.file.e->getData().data.catagoryValues[0].value);
+
+					for (auto &&a : asset.audio.audioFiles) {
+						if (a.fileType == "MoggSampleResource") {
+							a.fileData = std::move(fileData);
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (ImGui::Button("Replace Beat Midi")) {
+		auto beatFusion = OpenFile("Any File (*.*)\0*.*\0");
+		if (beatFusion) {
+			std::ifstream infile(*beatFusion, std::ios_base::binary);
+			std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+
+			for (auto &&c : mainFile.celData) {
+				if (c.data.type.value == CelType::Type::Beat) {
+					auto &&midiFile = c.data.majorAssets[0].data.midiFile.data;
+					auto &&asset = std::get<HmxAssetFile>(midiFile.file.e->getData().data.catagoryValues[0].value);
+					asset.audio.audioFiles[0].fileData = std::move(fileData);
+				}
+			}
+		}
+	}
 
 	if (ImGui::CollapsingHeader("Raw Files")) {
 		for (auto &&a : songPakFile.entries) {
@@ -1132,10 +1221,9 @@ void window_loop() {
 #endif
 
 #ifdef DO_SONG_CREATION
-		std::ifstream infile("dllstar_template.pak", std::ios_base::binary);
-		std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
 		DataBuffer dataBuf;
-		dataBuf.setupVector(fileData);
+		dataBuf.buffer = custom_song_pak_template;
+		dataBuf.size = sizeof(custom_song_pak_template);
 		dataBuf.serialize(songPakFile);
 
 		for (auto &&e : songPakFile.entries) {
@@ -1172,9 +1260,9 @@ void window_loop() {
 		ctx.pak = &songPakFile;
 		mainFile.serialize(ctx);
 
-		mainFile.shortName = "completely_different_short_name";
-		mainFile.songName = "My Custom Song (Not All Star)";
-		mainFile.artistName = "Mettra";
+		//mainFile.shortName = "completely_different_short_name";
+		//mainFile.songName = "My Custom Song (Not All Star)";
+		//mainFile.artistName = "Mettra";
 
 
 #if 0

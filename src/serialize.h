@@ -126,7 +126,7 @@ struct DataBuffer {
 		}
 
 #ifdef _DEBUG
-		//constexpr u32 dbgpos = 51777;
+		//constexpr u32 dbgpos = 78;
 		//if (!loading) {
 		//	if (pos <= dbgpos && pos + data_size > dbgpos) {
 		//		__debugbreak();
