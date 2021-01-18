@@ -241,7 +241,7 @@ void save_file() {
 	gCtx.currentPak->pak.serialize(outBuf);
 	outBuf.finalize();
 
-	std::string basePath = fs::path(gCtx.saveLocation).parent_path().string();
+	std::string basePath = fs::path(gCtx.saveLocation).parent_path().string() + "/";
 	std::ofstream outPak(basePath + gCtx.currentPak->root.shortName + "_P.pak", std::ios_base::binary);
 	outPak.write((char*)outBuf.buffer, outBuf.size);
 
