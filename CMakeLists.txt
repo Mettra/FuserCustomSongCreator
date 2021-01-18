@@ -13,6 +13,7 @@ file(GLOB SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/serialize.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/sha1.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/hmx_midifile.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/custom_song_creator.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_demo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_draw.cpp
@@ -23,7 +24,7 @@ file(GLOB SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui/imgui_stdlib.cpp
 )
 
-add_executable( ${PROJECT_NAME} ${SRCS} )
+add_executable( ${PROJECT_NAME} WIN32 ${SRCS} )
 
 target_include_directories(Fuser_CustomSongCreator PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/")
 target_include_directories(Fuser_CustomSongCreator PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/imgui/")

@@ -10,6 +10,13 @@
 #include <dinput.h>
 #include <tchar.h>
 
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+
+#include <iostream>
+#include <fstream>
+
 // Data
 static ID3D11Device*            g_pd3dDevice = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = NULL;
@@ -23,16 +30,39 @@ void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-extern void window_loop();
+size_t window_width = 1280;
+size_t window_height = 800;
+
+//extern void window_loop();
+extern void custom_song_creator_update(size_t width, size_t height);
 
 // Main code
-int main(int, char**)
+int __stdcall WinMain(
+    HINSTANCE hInstance,
+    HINSTANCE hPrevInstance,
+    LPSTR     lpCmdLine,
+    int       nShowCmd
+)
 {
+#ifdef _DEBUG
+	//Use existing console, or create one if needed
+	if (!AttachConsole(-1)) {
+		AllocConsole();
+		ShowWindow(GetConsoleWindow(), SW_SHOW);
+	}
+
+	//Redirect output to console
+	FILE* fp;
+	freopen_s(&fp, "CONOIN$", "r", stdin);
+	freopen_s(&fp, "CONOUT$", "w", stdout);
+	freopen_s(&fp, "CONOUT$", "w", stderr);
+#endif
+
     // Create application window
     //ImGui_ImplWin32_EnableDpiAwareness();
-    WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
+    WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Fuser Custom Song Creator"), NULL };
     ::RegisterClassEx(&wc);
-    HWND hwnd = ::CreateWindow(wc.lpszClassName, _T("Dear ImGui DirectX11 Example"), WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, NULL, NULL, wc.hInstance, NULL);
+    HWND hwnd = ::CreateWindow(wc.lpszClassName, _T("Fuser Custom Song Creator"), WS_OVERLAPPEDWINDOW, 100, 100, window_width, window_height, NULL, NULL, wc.hInstance, NULL);
 
     // Initialize Direct3D
     if (!CreateDeviceD3D(hwnd))
@@ -103,7 +133,10 @@ int main(int, char**)
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-		window_loop();
+		//ImGui::ShowDemoWindow();
+
+		//window_loop();
+		custom_song_creator_update(window_width, window_height);
 
         // Rendering
         ImGui::Render();
@@ -195,6 +228,8 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_pd3dDevice != NULL && wParam != SIZE_MINIMIZED)
         {
             CleanupRenderTarget();
+			window_width = (size_t)LOWORD(lParam);
+			window_height = (size_t)HIWORD(lParam);
             g_pSwapChain->ResizeBuffers(0, (UINT)LOWORD(lParam), (UINT)HIWORD(lParam), DXGI_FORMAT_UNKNOWN, 0);
             CreateRenderTarget();
         }
