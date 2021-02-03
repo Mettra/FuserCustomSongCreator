@@ -1,3 +1,6 @@
+#define NOMINMAX
+#include <Windows.h>
+
 #include "uasset.h"
 #include "imgui.h"
 #include "imgui_stdlib.h"
@@ -11,10 +14,102 @@ namespace fs = std::filesystem;
 
 #include "custom_song_pak_template.h"
 
-#define NOMINMAX
-#include <Windows.h>
+#include "moggcrypt/CCallbacks.h"
+#include "moggcrypt/VorbisEncrypter.h"
 
 #include "fuser_asset.h"
+
+#include "bass/bass.h"
+
+extern HWND G_hwnd;
+
+
+
+///////////////////
+
+struct AudioCtx {
+	HSAMPLE currentMusic = 0;
+	int currentDevice = -1;
+	bool init = false;
+	float volume;
+};
+AudioCtx gAudio;
+
+void initAudio() {
+	if (gAudio.init) {
+		BASS_Free();
+		gAudio.init = false;
+	}
+
+	if (!BASS_SetConfig(BASS_CONFIG_DEV_DEFAULT, 1)) {
+		printf("Failed to set config: %d\n", BASS_ErrorGetCode());
+		return;
+	}
+
+	if (!BASS_Init(gAudio.currentDevice, 44100, 0, G_hwnd, NULL)) {
+		printf("Failed to init: %d\n", BASS_ErrorGetCode());
+		return;
+	}
+
+	gAudio.init = true;
+	gAudio.currentDevice = BASS_GetDevice();
+	gAudio.volume = BASS_GetConfig(BASS_CONFIG_GVOL_SAMPLE) / 10000;
+}
+
+void playOgg(const std::vector<uint8_t> &ogg) {
+	if (gAudio.currentMusic != 0) {
+		BASS_SampleFree(gAudio.currentMusic);
+	}
+	gAudio.currentMusic = BASS_SampleLoad(TRUE, ogg.data(), 0, ogg.size(), 3, 0);
+	if (gAudio.currentMusic == 0) {
+		printf("Error while loading: %d\n", BASS_ErrorGetCode());
+		return;
+	}
+
+	HCHANNEL ch = BASS_SampleGetChannel(gAudio.currentMusic, FALSE);
+	if (!BASS_ChannelPlay(ch, TRUE)) {
+		printf("Error while playing: %d\n", BASS_ErrorGetCode());
+		return;
+	}
+}
+
+void pauseMusic() {
+	
+}
+
+void display_playable_audio(PlayableAudio &audio) {
+	if (audio.oggData.empty()) {
+		ImGui::Text("No ogg file loaded.");
+		return;
+	}
+
+	auto active = BASS_ChannelIsActive(audio.channelHandle);
+	if (active != BASS_ACTIVE_PLAYING) {
+		if (ImGui::Button("Play")) {
+			if (audio.audioHandle != 0) {
+				BASS_SampleFree(audio.audioHandle);
+			}
+			audio.audioHandle = BASS_SampleLoad(TRUE, audio.oggData.data(), 0, audio.oggData.size(), 3, 0);
+			if (audio.audioHandle == 0) {
+				printf("Error while loading: %d\n", BASS_ErrorGetCode());
+				return;
+			}
+
+			audio.channelHandle = BASS_SampleGetChannel(audio.audioHandle, FALSE);
+			if (!BASS_ChannelPlay(audio.channelHandle, TRUE)) {
+				printf("Error while playing: %d\n", BASS_ErrorGetCode());
+				return;
+			}
+		}
+	}
+	else {
+		if (ImGui::Button("Stop")) {
+			BASS_ChannelStop(audio.channelHandle);
+		}
+	}
+}
+
+//////////////////////
 
 struct ImGuiErrorModalManager {
 	size_t error_id = 0;
@@ -160,7 +255,7 @@ static std::optional<std::string> SaveFile(LPCSTR filter, const std::string &fil
 	ofn.nMaxFileTitle = 0;
 	ofn.lpstrInitialDir = NULL;
 	ofn.lpstrDefExt = "pak";
-	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_OVERWRITEPROMPT;
 	if (GetSaveFileName(&ofn)) {
 		return std::string(ofn.lpstrFile);
 	}
@@ -313,6 +408,9 @@ void display_main_properties() {
 	ChooseFuserEnum<FuserEnums::Key>("Key", root.songKey);
 }
 
+
+
+std::string lastMoggError;
 void display_cell_data(CelData &celData) {
 	auto &&fusionFile = celData.majorAssets[0].data.fusionFile.data;
 	auto &&asset = std::get<HmxAssetFile>(fusionFile.file.e->getData().data.catagoryValues[0].value);
@@ -320,25 +418,45 @@ void display_cell_data(CelData &celData) {
 	auto &&header = std::get<HmxAudio::PackageFile::MoggSampleResourceHeader>(mogg.resourceHeader);
 
 	if (ImGui::Button("Replace Audio")) {
-		auto moggFile = OpenFile("Encrypted Mogg (*.mogg)\0*.mogg\0");
+		auto moggFile = OpenFile("Ogg file (*.ogg)\0*.ogg\0");
 		if (moggFile) {
 			std::ifstream infile(*moggFile, std::ios_base::binary);
 			std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
-			if (fileData.size() > 0 && fileData[0] == 0x0B) {
-				mogg.fileData = std::move(fileData);
+			std::vector<u8> outData;
+
+			try {
+				VorbisEncrypter ve(&infile, 0x10, cppCallbacks);
+				char buf[8192];
+				size_t read = 0;
+				size_t offset = 0;
+				do {
+					outData.resize(outData.size() + sizeof(buf));
+					read = ve.ReadRaw(outData.data() + offset, 1, 8192);
+					offset += read;
+				} while (read != 0);
+			}
+			catch (std::exception& e) {
+				lastMoggError = e.what();
+			}
+
+			if (outData.size() > 0 && outData[0] == 0x0B) {
+				mogg.fileData = std::move(outData);
+				fusionFile.mogg.oggData = std::move(fileData);
 			}
 			else {
-				ImGui::OpenPopup("Encrypted Mogg Error");
+				ImGui::OpenPopup("Ogg loading error");
 			}
 		}
 	}
+
+	display_playable_audio(fusionFile.mogg);
 
 	ImGui::InputScalar("Sample Rate", ImGuiDataType_U32, &header.sample_rate);
 
 	ChooseFuserEnum<FuserEnums::Instrument>("Instrument", celData.instrument);
 	//ChooseFuserEnum<FuserEnums::Instrument>("Sub Instrument", celData.subInstrument);
 
-	ErrorModal("Encrypted Mogg Error", "Invalid mogg file! The mogg was probably un-encrypted, make sure to run it through MoggcryptCpp first!");
+	ErrorModal("Ogg loading error", ("Failed to load ogg file:" + lastMoggError).c_str());
 }
 
 void custom_song_creator_update(size_t width, size_t height) {
@@ -366,6 +484,45 @@ void custom_song_creator_update(size_t width, size_t height) {
 
 			ImGui::EndMenu();
 		}
+
+		if (ImGui::BeginMenu("Audio"))
+		{
+			std::vector<std::string> devices;
+
+			int a, count = 0;
+			BASS_DEVICEINFO info;
+
+			for (a = 0; BASS_GetDeviceInfo(a, &info); a++)
+			{
+				if (info.flags & BASS_DEVICE_ENABLED) {
+					devices.emplace_back(info.name);
+				}
+			}
+
+			auto get_item = [](void* data, int idx, const char** out) -> bool {
+				std::vector<std::string> &devices = *(std::vector<std::string>*)data;
+				*out = devices[idx].c_str();
+
+				return true;
+			};
+
+			
+			if (ImGui::Combo("Current Device", &gAudio.currentDevice, get_item, &devices, devices.size())) {
+				BASS_Stop();
+				BASS_SetDevice(gAudio.currentDevice);
+				BASS_Start();
+			}
+
+			if (ImGui::SliderFloat("Volume", &gAudio.volume, 0, 1)) {
+				BASS_SetConfig(
+					BASS_CONFIG_GVOL_SAMPLE,
+					gAudio.volume * 10000
+				);
+			}
+
+			ImGui::EndMenu();
+		}
+
 		ImGui::EndMainMenuBar();
 	}
 

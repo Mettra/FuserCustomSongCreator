@@ -1,5 +1,11 @@
 #pragma once
 
+struct PlayableAudio {
+	std::vector<u8> oggData;
+	u64 audioHandle = 0;
+	u64 channelHandle = 0;
+};
+
 struct FuserEnums {
 	struct Key {
 		static std::vector<std::string> GetValues() {
@@ -425,6 +431,8 @@ struct MidiFileAsset {
 struct FusionFileAsset {
 	SongPakEntry file;
 
+	PlayableAudio mogg;
+
 	void serialize(SongSerializationCtx &ctx) {
 
 		if (!ctx.loading) {
@@ -558,7 +566,9 @@ struct SongTransition {
 
 		if (!ctx.loading) {
 			ctx.serializeText("Title", ctx.songName);
-			ctx.serializePrimitive("BPM", ctx.bpm);
+
+			i32 bpm = std::min(ctx.bpm, 157);
+			ctx.serializePrimitive("BPM", bpm);
 
 			//Beats don't have a key, so they always serialize as EKey::Num
 			if (ctx.curType.value != CelType::Type::Beat) {
@@ -647,7 +657,9 @@ struct CelData {
 
 		if (!ctx.loading) {
 			ctx.serializeText("Title", ctx.songName);
-			ctx.serializePrimitive("BPM", ctx.bpm);
+
+			i32 bpm = std::min(ctx.bpm, 157);
+			ctx.serializePrimitive("BPM", bpm);
 
 			//Beats don't have a key, so they always serialize as EKey::Num
 			if (ctx.curType.value != CelType::Type::Beat) {

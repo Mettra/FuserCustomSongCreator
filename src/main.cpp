@@ -17,6 +17,10 @@
 #include <iostream>
 #include <fstream>
 
+#include "bass/bass.h"
+
+#include <vector>
+
 // Data
 static ID3D11Device*            g_pd3dDevice = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = NULL;
@@ -35,6 +39,9 @@ size_t window_height = 800;
 
 //extern void window_loop();
 extern void custom_song_creator_update(size_t width, size_t height);
+extern void initAudio();
+HWND G_hwnd;
+
 
 // Main code
 int __stdcall WinMain(
@@ -63,6 +70,11 @@ int __stdcall WinMain(
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("Fuser Custom Song Creator"), NULL };
     ::RegisterClassEx(&wc);
     HWND hwnd = ::CreateWindow(wc.lpszClassName, _T("Fuser Custom Song Creator"), WS_OVERLAPPEDWINDOW, 100, 100, window_width, window_height, NULL, NULL, wc.hInstance, NULL);
+	G_hwnd = hwnd;
+
+	initAudio();
+
+	
 
     // Initialize Direct3D
     if (!CreateDeviceD3D(hwnd))
