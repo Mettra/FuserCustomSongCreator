@@ -254,7 +254,7 @@ static std::optional<std::string> SaveFile(LPCSTR filter, LPCSTR ext, const std:
 	ofn.lpstrFileTitle = NULL;
 	ofn.nMaxFileTitle = 0;
 	ofn.lpstrInitialDir = NULL;
-	ofn.lpstrDefExt = "pak";
+	ofn.lpstrDefExt = ext;
 	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_OVERWRITEPROMPT;
 	if (GetSaveFileName(&ofn)) {
 		return std::string(ofn.lpstrFile);
