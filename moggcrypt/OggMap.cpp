@@ -51,6 +51,7 @@ std::variant<std::string, OggMap> OggMap::Create(void* datasource, ov_callbacks 
 		OggMap ret;
 		ret.version = 0x10;
 		ret.chunk_size = 20000;
+		ret.sample_rate = vs->id.audio_sample_rate;
 		ComputeMap(vs, ret);
 		vorbis_free(vs);
 		return ret;

@@ -19,6 +19,7 @@ struct OggMap {
   uint32_t version;
   uint32_t chunk_size;
   uint32_t num_entries;
+  uint32_t sample_rate;
   struct Entry {
     Entry(uint32_t bytes, uint32_t samples) : bytes(bytes), samples(samples){}
     uint32_t bytes;

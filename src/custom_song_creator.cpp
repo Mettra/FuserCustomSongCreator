@@ -237,7 +237,7 @@ static std::optional<std::string> OpenFile(LPCSTR filter) {
 	return std::nullopt;
 }
 
-static std::optional<std::string> SaveFile(LPCSTR filter, const std::string &fileName) {
+static std::optional<std::string> SaveFile(LPCSTR filter, LPCSTR ext, const std::string &fileName) {
 	CHAR szFileName[MAX_PATH];
 
 	// open a file name
@@ -369,7 +369,7 @@ void save_file() {
 bool Error_InvalidFileName = false;
 void select_save_location() {
 	auto fileName = gCtx.currentPak->root.shortName + "_P.pak";
-	auto location = SaveFile("Fuser Custom Song (*.pak)\0*.pak\0", fileName);
+	auto location = SaveFile("Fuser Custom Song (*.pak)\0*.pak\0", "pak", fileName);
 	if (location) {
 		auto path = fs::path(*location);
 		auto savedFileName = path.stem().string() + path.extension().string();
@@ -434,6 +434,8 @@ void display_cell_data(CelData &celData) {
 					read = ve.ReadRaw(outData.data() + offset, 1, 8192);
 					offset += read;
 				} while (read != 0);
+
+				header.sample_rate = ve.sample_rate;
 			}
 			catch (std::exception& e) {
 				lastMoggError = e.what();
@@ -457,6 +459,107 @@ void display_cell_data(CelData &celData) {
 	//ChooseFuserEnum<FuserEnums::Instrument>("Sub Instrument", celData.subInstrument);
 
 	ErrorModal("Ogg loading error", ("Failed to load ogg file:" + lastMoggError).c_str());
+
+	if (ImGui::CollapsingHeader("Advanced")) {
+		if (ImGui::Button("Export Fusion File")) {
+			auto file = SaveFile("Fusion Text File (.fusion)\0*.fusion\0", "fusion", "");
+			if (file) {
+				for (auto &&f : asset.audio.audioFiles) {
+					if (f.fileType == "FusionPatchResource") {
+
+						std::ofstream outFile(*file);
+						std::string outStr = hmx_fusion_parser::outputData(std::get<HmxAudio::PackageFile::FusionFileResource>(f.resourceHeader).nodes);
+						outFile << outStr;
+
+						break;
+					}
+				}
+			}
+		}
+
+		if (ImGui::Button("Import Fusion File")) {
+			auto file = OpenFile("Fusion Text File (.fusion)\0*.fusion\0");
+			if (file) {
+				for (auto &&f : asset.audio.audioFiles) {
+					if (f.fileType == "FusionPatchResource") {
+
+						std::ifstream infile(*file, std::ios_base::binary);
+						std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+						std::get<HmxAudio::PackageFile::FusionFileResource>(f.resourceHeader).nodes = hmx_fusion_parser::parseData(fileData);
+
+						break;
+					}
+				}
+			}
+		}
+
+		ImGui::Spacing();
+
+		bool overwrite_midi = false;
+		bool maj = true;
+
+		if (ImGui::Button("Overwrite Major Midi File")) {
+			overwrite_midi = true;
+		}
+		else if (ImGui::Button("Overwrite Minor Midi File")) {
+			overwrite_midi = true;
+			maj = false;
+		}
+
+		if (overwrite_midi) {
+			auto file = OpenFile("Harmonix Midi Resource File (.mid_pc)\0*.mid_pc\0");
+			if (file) {
+				AssetLink<MidiSongAsset> *midiSong = nullptr;
+				if (maj) {
+					midiSong = &celData.majorAssets[0];
+				}
+				else {
+					midiSong = &celData.minorAssets[0];
+				}
+
+				auto &&midi_file = midiSong->data.midiFile.data;
+				auto &&midiAsset = std::get<HmxAssetFile>(midi_file.file.e->getData().data.catagoryValues[0].value);
+				
+				std::ifstream infile(*file, std::ios_base::binary);
+				std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+				midiAsset.audio.audioFiles[0].fileData = std::move(fileData);
+			}
+		}
+
+		ImGui::Spacing();
+
+
+		bool export_midi = false;
+
+		if (ImGui::Button("Export Major Midi File")) {
+			export_midi = true;
+			maj = true;
+		}
+		else if (ImGui::Button("Export Minor Midi File")) {
+			export_midi = true;
+			maj = false;
+		}
+
+		if (export_midi) {
+			auto file = SaveFile("Harmonix Midi Resource File (.mid_pc)\0*.mid_pc\0", "mid_pc", "");
+			if (file) {
+				AssetLink<MidiSongAsset> *midiSong = nullptr;
+				if (maj) {
+					midiSong = &celData.majorAssets[0];
+				}
+				else {
+					midiSong = &celData.minorAssets[0];
+				}
+
+				auto &&midi_file = midiSong->data.midiFile.data;
+				auto &&midiAsset = std::get<HmxAssetFile>(midi_file.file.e->getData().data.catagoryValues[0].value);
+				auto &&fileData = midiAsset.audio.audioFiles[0].fileData;
+
+				std::ofstream outfile(*file, std::ios_base::binary);
+				outfile.write((const char *)fileData.data(), fileData.size());
+			}
+		}
+	}
 }
 
 void custom_song_creator_update(size_t width, size_t height) {
@@ -522,6 +625,79 @@ void custom_song_creator_update(size_t width, size_t height) {
 
 			ImGui::EndMenu();
 		}
+
+#if _DEBUG
+		if (ImGui::BeginMenu("Debug Menu"))
+		{
+			bool extract_uexp = false;
+			std::string save_file;
+			std::string ext;
+			std::function<std::vector<u8>(const Asset&)> getData;
+
+			if (ImGui::MenuItem("Extract Midi From uexp")) {
+				extract_uexp = true;
+				save_file = "Fuser Midi File (*.midi_pc)\0.midi_pc\0";
+				ext = "midi_pc";
+				getData = [](const Asset &asset) {
+					auto &&midiAsset = std::get<HmxAssetFile>(asset.data.catagoryValues[0].value);
+					auto &&fileData = midiAsset.audio.audioFiles[0].fileData;
+					return fileData;
+				};
+			}
+
+			if (ImGui::MenuItem("Extract Fusion From uexp")) {
+				extract_uexp = true;
+				save_file = "Fuser Fusion File (*.fusion)\0.fusion\0";
+				ext = "fusion";
+				getData = [](const Asset &asset) {
+					auto &&assetFile = std::get<HmxAssetFile>(asset.data.catagoryValues[0].value);
+					
+					for (auto &&f : assetFile.audio.audioFiles) {
+						if (f.fileType == "FusionPatchResource") {
+							std::string outStr = hmx_fusion_parser::outputData(std::get<HmxAudio::PackageFile::FusionFileResource>(f.resourceHeader).nodes);
+							std::vector<u8> out;
+							out.resize(outStr.size());
+							memcpy(out.data(), outStr.data(), outStr.size());
+							return out;
+						}
+					}
+
+					return std::vector<u8>();
+				};
+			}
+
+			if (extract_uexp) {
+				auto file = OpenFile("Unreal Asset File (*.uasset)\0*.uasset\0");
+				if (file) {
+					auto assetFile = fs::path(*file);
+					auto uexpFile = assetFile.parent_path() / (assetFile.stem().string() + ".uexp");
+
+					std::ifstream infile(assetFile, std::ios_base::binary);
+					std::ifstream uexpfile(uexpFile, std::ios_base::binary);
+
+					std::vector<u8> fileData = std::vector<u8>(std::istreambuf_iterator<char>(infile), std::istreambuf_iterator<char>());
+					fileData.insert(fileData.end(), std::istreambuf_iterator<char>(uexpfile), std::istreambuf_iterator<char>());
+
+
+					DataBuffer dataBuf;
+					dataBuf.loading = true;
+					dataBuf.setupVector(fileData);
+
+					Asset a;
+					a.serialize(dataBuf);
+
+					auto out_file = SaveFile(save_file.c_str(), ext.c_str(), "");
+					if (out_file) {
+						auto fileData = getData(a);
+						std::ofstream outfile(*out_file, std::ios_base::binary);
+						outfile.write((const char *)fileData.data(), fileData.size());
+					}
+				}
+			}
+
+			ImGui::EndMenu();
+		}
+#endif
 
 		ImGui::EndMainMenuBar();
 	}
