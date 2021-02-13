@@ -509,7 +509,7 @@ struct MidiFileAsset {
 struct FusionFileAsset {
 	SongPakEntry file;
 
-	PlayableAudio mogg;
+	std::vector<PlayableAudio> playableMoggs;
 
 	void serialize(SongSerializationCtx &ctx) {
 
@@ -541,7 +541,7 @@ struct FusionFileAsset {
 			}
 
 			fusionFile->fileName = Game_Prefix + file.path + ".fusion";
-			auto &&fusion = std::get< HmxAudio::PackageFile::FusionFileResource>(fusionFile->resourceHeader);
+			auto &&fusion = std::get<HmxAudio::PackageFile::FusionFileResource>(fusionFile->resourceHeader);
 			auto map = fusion.nodes.getNode("keymap");
 
 			idx = 0;
@@ -551,7 +551,7 @@ struct FusionFileAsset {
 				auto&& ts = nodes->getNode("timestretch_settings");
 				ts.getInt("orig_tempo") = ctx.bpm;
 
-				//++idx; //Removed for now to make both major and minor reference the first one
+				++idx;
 			}
 		}
 	}

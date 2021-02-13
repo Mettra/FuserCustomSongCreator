@@ -3,11 +3,13 @@
 
 #include "uasset.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_stdlib.h"
 #include "crc.h"
 #include <optional>
 #include <algorithm>
 #include <array>
+#include <unordered_set>
 
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -425,14 +427,13 @@ void display_main_properties() {
 	ChooseFuserEnum<FuserEnums::KeyMode>("Mode", root.keyMode);
 }
 
-
-
 std::string lastMoggError;
-void display_cell_data(CelData &celData) {
-	auto &&fusionFile = celData.majorAssets[0].data.fusionFile.data;
-	auto &&asset = std::get<HmxAssetFile>(fusionFile.file.e->getData().data.catagoryValues[0].value);
-	auto &&mogg = asset.audio.audioFiles[0];
+void display_mogg_settings(FusionFileAsset &fusionFile, size_t idx, HmxAudio::PackageFile &mogg) {
 	auto &&header = std::get<HmxAudio::PackageFile::MoggSampleResourceHeader>(mogg.resourceHeader);
+
+	if (fusionFile.playableMoggs.size() <= idx) {
+		fusionFile.playableMoggs.resize(idx + 1);
+	}
 
 	if (ImGui::Button("Replace Audio")) {
 		auto moggFile = OpenFile("Ogg file (*.ogg)\0*.ogg\0");
@@ -460,7 +461,7 @@ void display_cell_data(CelData &celData) {
 
 			if (outData.size() > 0 && outData[0] == 0x0B) {
 				mogg.fileData = std::move(outData);
-				fusionFile.mogg.oggData = std::move(fileData);
+				fusionFile.playableMoggs[idx].oggData = std::move(fileData);
 			}
 			else {
 				ImGui::OpenPopup("Ogg loading error");
@@ -468,14 +469,134 @@ void display_cell_data(CelData &celData) {
 		}
 	}
 
-	display_playable_audio(fusionFile.mogg);
+	display_playable_audio(fusionFile.playableMoggs[idx]);
 
 	ImGui::InputScalar("Sample Rate", ImGuiDataType_U32, &header.sample_rate);
 
-	ChooseFuserEnum<FuserEnums::Instrument>("Instrument", celData.instrument);
-	//ChooseFuserEnum<FuserEnums::Instrument>("Sub Instrument", celData.subInstrument);
-
 	ErrorModal("Ogg loading error", ("Failed to load ogg file:" + lastMoggError).c_str());
+}
+
+void display_cell_data(CelData &celData, FuserEnums::KeyMode::Value currentKeyMode) {
+	ChooseFuserEnum<FuserEnums::Instrument>("Instrument", celData.instrument);
+
+	// Mogg Data
+	//
+
+	auto &&fusionFile = celData.majorAssets[0].data.fusionFile.data;
+	auto &&asset = std::get<HmxAssetFile>(fusionFile.file.e->getData().data.catagoryValues[0].value);
+	//auto &&mogg = asset.audio.audioFiles[0];
+
+	HmxAudio::PackageFile *fusionPackageFile = nullptr;
+	std::vector<HmxAudio::PackageFile *> moggFiles;
+	std::unordered_set<std::string> fusion_mogg_files;
+
+	{
+		for (auto &&file : asset.audio.audioFiles) {
+			if (file.fileType == "FusionPatchResource") {
+				fusionPackageFile = &file;
+			}
+			else if (file.fileType == "MoggSampleResource") {
+				moggFiles.emplace_back(&file);
+			}
+		}
+
+		auto &&fusion = std::get<HmxAudio::PackageFile::FusionFileResource>(fusionPackageFile->resourceHeader);
+		auto map = fusion.nodes.getNode("keymap");
+
+		for (auto c : map.children) {
+			auto nodes = std::get<hmx_fusion_nodes*>(c.value);
+			fusion_mogg_files.emplace(nodes->getString("sample_path"));
+		}
+	}
+	
+	bool duplicate_moggs = fusion_mogg_files.size() == 1;
+
+	ImGui::NewLine();
+	
+	std::string primaryKey = "Major";
+	std::string secondaryKey = "Minor";
+
+	if (currentKeyMode == FuserEnums::KeyMode::Value::Minor) {
+		std::swap(primaryKey, secondaryKey);
+	}
+
+	std::string duplacateString = "Duplicate Primary audio for Secondary audio?";
+
+	auto windowSize = ImGui::GetWindowSize();
+	auto oggWindowSize = 150;
+	ImGui::BeginChild("Primary", ImVec2(windowSize.x / 2, oggWindowSize));
+	ImGui::Text(("Primary (" + primaryKey + ")").c_str());
+	display_mogg_settings(fusionFile, 0, *moggFiles[0]);
+
+	if (ImGui::Checkbox(duplacateString.c_str(), &duplicate_moggs)) {
+		if (duplicate_moggs) {
+			if (moggFiles.size() == 2) {
+				asset.audio.audioFiles.erase(asset.audio.audioFiles.begin() + 1);
+
+				moggFiles.clear();
+				for (auto &&file : asset.audio.audioFiles) {
+					if (file.fileType == "FusionPatchResource") {
+						fusionPackageFile = &file;
+					}
+					else if (file.fileType == "MoggSampleResource") {
+						moggFiles.emplace_back(&file);
+					}
+				}
+			}
+
+			auto &&fusion = std::get<HmxAudio::PackageFile::FusionFileResource>(fusionPackageFile->resourceHeader);
+			auto map = fusion.nodes.getNode("keymap");
+
+			if (map.children.size() == 2) {
+				std::get<hmx_fusion_nodes*>(map.children[1].value)->getString("sample_path") = std::get<hmx_fusion_nodes*>(map.children[0].value)->getString("sample_path");
+			}
+		}
+		else {
+			if (moggFiles.size() == 1) {
+				asset.audio.audioFiles.insert(asset.audio.audioFiles.begin() + 1, *moggFiles[0]); 
+				
+				moggFiles.clear();
+				for (auto &&file : asset.audio.audioFiles) {
+					if (file.fileType == "FusionPatchResource") {
+						fusionPackageFile = &file;
+					}
+					else if (file.fileType == "MoggSampleResource") {
+						moggFiles.emplace_back(&file);
+					}
+				}
+			}
+
+			auto &&fusion = std::get<HmxAudio::PackageFile::FusionFileResource>(fusionPackageFile->resourceHeader);
+			auto map = fusion.nodes.getNode("keymap");
+
+			if (map.children.size() == 2) {
+				std::get<hmx_fusion_nodes*>(map.children[1].value)->getString("sample_path") = "second_key";
+			}
+		}
+	}
+
+	ImGui::EndChild();
+
+	ImGui::SameLine();
+	ImGui::BeginChild("Secondary", ImVec2(windowSize.x / 2, oggWindowSize));
+	ImGui::Text(("Secondary (" + secondaryKey + ")").c_str());
+
+	if (duplicate_moggs) {
+		ImGui::Text("Audio is duplicated from the primary audio.");
+	}
+	else {
+		display_mogg_settings(fusionFile, 1, *moggFiles[1]);
+	}
+
+	ImGui::EndChild();
+	
+
+	
+
+	ImGui::NewLine();
+	
+	// Advanced
+	//
 
 	if (ImGui::CollapsingHeader("Advanced")) {
 		if (ImGui::Button("Export Fusion File")) {
@@ -779,7 +900,7 @@ void custom_song_creator_update(size_t width, size_t height) {
 				std::string tabName = "Song Cell - ";
 				tabName += cel.data.type.getString();
 				if (ImGui::BeginTabItem(tabName.c_str())) {
-					display_cell_data(cel.data);
+					display_cell_data(cel.data, gCtx.currentPak->root.keyMode);
 					ImGui::EndTabItem();
 				}
 			}
