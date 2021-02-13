@@ -7,8 +7,28 @@ struct PlayableAudio {
 };
 
 struct FuserEnums {
+	template<typename Enum>
+	static inline typename Enum::Value ToValue(const std::string &str) {
+		typename Enum::Value v = static_cast<typename Enum::Value>(0);
+		size_t idx = 0;
+		for (auto &&s : Enum::GetValues()) {
+			if (str == s) {
+				v = static_cast<typename Enum::Value>(idx);
+				break;
+			}
+			++idx;
+		}
+
+		return v;
+	}
+
+	template<typename Enum>
+	static inline const std::string &FromValue(typename Enum::Value v) {
+		return Enum::GetValues()[static_cast<size_t>(v)];
+	}
+
 	struct Key {
-		static std::vector<std::string> GetValues() {
+		static const std::vector<std::string>& GetValues() {
 			static std::vector<std::string> values = {
 				"EKey::C",
 				"EKey::Db",
@@ -27,8 +47,23 @@ struct FuserEnums {
 		}
 	};
 
+	struct KeyMode {
+		enum class Value {
+			Major,
+			Minor
+		};
+
+		static const std::vector<std::string>& GetValues() {
+			static std::vector<std::string> values = {
+				"EKeyMode::Major",
+				"EKeyMode::Minor"
+			};
+			return values;
+		}
+	};
+
 	struct Instrument {
-		static std::vector<std::string> GetValues() {
+		static const std::vector<std::string>& GetValues() {
 			static std::vector<std::string> values = {
 				"EInstrument::None",
 				"EInstrument::Guitar",
@@ -162,6 +197,7 @@ struct SongSerializationCtx {
 	i32 bpm;
 	CelType curType;
 	MidiType curMidiType;
+	FuserEnums::KeyMode::Value curKeyMode;
 	bool isTransition = false;
 
 	std::string folderRoot() {
@@ -222,8 +258,50 @@ struct SongSerializationCtx {
 	}
 
 	template<typename T>
+	struct NewProp {
+		PropertyData *propData;
+		T* prop;
+	};
+
+	template<typename T>
+	NewProp<T> getOrCreateProp(PakFile::PakEntry *entry, const std::string &propName) {
+		auto &&assetData = std::get<PakFile::PakEntry::PakAssetData>(entry->data);
+		AssetHeader *header = &std::get<AssetHeader>(assetData.pakHeader->data);
+		auto &&obj = std::get<UObject>(assetData.data.catagoryValues[0].value);
+
+		auto v = obj.data.get(header, propName);
+		if (!v) {
+			T v;
+
+			PropertyData prop;
+			prop.nameRef = header->findOrCreateName(propName);
+			prop.widgetData = 0;
+			prop.typeRef = header->findOrCreateName(asset_helper::getTypeForValue(v));
+			prop.value = std::move(v);
+			prop.length = sizeof(T);
+
+			obj.data.properties.emplace_back(std::move(prop));
+
+			NewProp<T> p;
+			p.propData = &obj.data.properties.back();
+			p.prop = &std::get<T>(obj.data.properties.back().value);
+			return p;
+		}
+
+		NewProp<T> p;
+		p.propData = v;
+		p.prop = &std::get<T>(v->value);
+		return p;
+	}
+
+	template<typename T>
 	T* getProp(const std::string &propName) {
 		return getProp<T>(curEntry, propName);
+	}
+
+	template<typename T>
+	NewProp<T> getOrCreateProp(const std::string &propName) {
+		return getOrCreateProp<T>(curEntry, propName);
 	}
 
 	void serializeName(const std::string &propName, std::string &serializedStr) {
@@ -589,6 +667,7 @@ struct CelData {
 	SongPakEntry file;
 
 	CelType type;
+	FuserEnums::KeyMode::Value mode = FuserEnums::KeyMode::Value::Major;
 	std::string shortName;
 	std::string instrument;
 	//std::optional<std::string> subInstrument;
@@ -613,6 +692,12 @@ struct CelData {
 				else if (celTypeStr == "ECelType::Loop") {
 					type.value = CelType::Type::Loop;
 				}
+			}
+
+			
+			if (auto celMode = ctx.getProp<EnumProperty>(ctx.curEntry, "Mode")) {
+				auto celTypeStr = celType->value.getString(ctx.getHeader());
+				mode = FuserEnums::ToValue<FuserEnums::KeyMode>(celTypeStr);
 			}
 		}
 
@@ -665,6 +750,13 @@ struct CelData {
 			if (ctx.curType.value != CelType::Type::Beat) {
 				ctx.serializeEnum("Key", ctx.songKey);
 			}
+			
+			auto prop = ctx.getOrCreateProp<EnumProperty>("Mode");
+			prop.propData->typeRef = ctx.getHeader().findOrCreateName("EnumProperty");
+			prop.propData->length = 8;
+			prop.prop->enumType = ctx.getHeader().findOrCreateName("EKeyMode");
+			prop.prop->blank = 0;
+			prop.prop->value = ctx.getHeader().findOrCreateName(FuserEnums::FromValue<FuserEnums::KeyMode>(ctx.curKeyMode));
 
 			//Construct Transpose Table
 			{
@@ -756,6 +848,7 @@ struct AssetRoot {
 	std::string artistName;
 	std::string songName;
 	std::string songKey;
+	FuserEnums::KeyMode::Value keyMode;
 	i32 bpm;
 
 	SongPakEntry file;
@@ -767,6 +860,7 @@ struct AssetRoot {
 		ctx.songName = songName;
 		ctx.songKey = songKey;
 		ctx.bpm = bpm;
+		ctx.curKeyMode = keyMode;
 
 		//@REVISIT
 		file.thisObjectPath = 4;
@@ -787,6 +881,7 @@ struct AssetRoot {
 					ctx.songName = songName = ctx.getProp<TextProperty>(fileLink.data.file.e, "Title")->strings.back();
 					ctx.bpm = bpm = ctx.getProp<PrimitiveProperty<i32>>(fileLink.data.file.e, "BPM")->data;
 					ctx.songKey = songKey = ctx.getProp<EnumProperty>(fileLink.data.file.e, "Key")->value.getString(fileLink.data.file.e->getHeader());
+					ctx.curKeyMode = keyMode = fileLink.data.mode;
 				}
 
 				celData.emplace_back(std::move(fileLink));

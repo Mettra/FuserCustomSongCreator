@@ -191,7 +191,7 @@ static void HelpMarker(const char* desc)
 
 template<typename T>
 static void ChooseFuserEnum(const char *label, std::string &out) {
-	auto&& values = T::GetValues();
+	auto values = T::GetValues();
 
 	auto getter = [](void *data, int idx, const char **out_str) {
 		auto &&d = reinterpret_cast<std::vector<std::string>*>(data);
@@ -209,6 +209,22 @@ static void ChooseFuserEnum(const char *label, std::string &out) {
 
 	if (ImGui::Combo(label, &currentChoice, getter, &values, values.size())) {
 		out = values[currentChoice];
+	}
+}
+
+template<typename T>
+static void ChooseFuserEnum(const char *label, typename T::Value &out) {
+	auto values = T::GetValues();
+
+	auto getter = [](void *data, int idx, const char **out_str) {
+		auto &&d = reinterpret_cast<std::vector<std::string>*>(data);
+		*out_str = (*d)[idx].c_str();
+		return true;
+	};
+
+	int currentChoice = static_cast<int>(out);
+	if (ImGui::Combo(label, &currentChoice, getter, &values, values.size())) {
+		out = static_cast<typename T::Value>(currentChoice);
 	}
 }
 
@@ -406,6 +422,7 @@ void display_main_properties() {
 
 	ImGui::InputScalar("BPM", ImGuiDataType_S32, &root.bpm);
 	ChooseFuserEnum<FuserEnums::Key>("Key", root.songKey);
+	ChooseFuserEnum<FuserEnums::KeyMode>("Mode", root.keyMode);
 }
 
 
