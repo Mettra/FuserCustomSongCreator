@@ -528,7 +528,22 @@ void display_cell_data(CelData &celData, FuserEnums::KeyMode::Value currentKeyMo
 	ImGui::Text(("Primary (" + primaryKey + ")").c_str());
 	display_mogg_settings(fusionFile, 0, *moggFiles[0]);
 
-	if (ImGui::Checkbox(duplacateString.c_str(), &duplicate_moggs)) {
+	bool duplicate_changed = false;
+	
+	
+	if (celData.type.value == CelType::Type::Beat) {
+		ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+		ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+	}
+	duplicate_changed = ImGui::Checkbox(duplacateString.c_str(), &duplicate_moggs);
+	if (celData.type.value == CelType::Type::Beat) {
+		ImGui::PopItemFlag();
+		ImGui::PopStyleVar();
+		ImGui::SameLine();
+		HelpMarker("Currently, Beat tracks must duplucate their audio.");
+	}
+
+	if (duplicate_changed) {
 		if (duplicate_moggs) {
 			if (moggFiles.size() == 2) {
 				asset.audio.audioFiles.erase(asset.audio.audioFiles.begin() + 1);
