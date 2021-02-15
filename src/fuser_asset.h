@@ -696,8 +696,8 @@ struct CelData {
 
 			
 			if (auto celMode = ctx.getProp<EnumProperty>(ctx.curEntry, "Mode")) {
-				auto celTypeStr = celType->value.getString(ctx.getHeader());
-				mode = FuserEnums::ToValue<FuserEnums::KeyMode>(celTypeStr);
+				auto celModeStr = celMode->value.getString(ctx.getHeader());
+				mode = FuserEnums::ToValue<FuserEnums::KeyMode>(celModeStr);
 			}
 		}
 
